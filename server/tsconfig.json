@@ -9,7 +9,9 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@user-service/types": ["../types/dist/index.d.ts"],
+      "@user-service/db": ["../db/dist/index.d.ts"]
     },
     "tsBuildInfoFile": "dist/.tsbuildinfo",
     "isolatedModules": true
