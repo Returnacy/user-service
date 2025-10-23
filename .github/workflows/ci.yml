@@ -56,8 +56,8 @@ jobs:
       - name: Configure pnpm store path
         run: pnpm config set store-dir ~/.pnpm-store
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install dependencies (workspace)
+        run: pnpm -w install --frozen-lockfile
 
       - name: Generate Prisma Client
         working-directory: db
@@ -69,14 +69,11 @@ jobs:
         env:
           DATABASE_URL: ${{ env.DATABASE_URL }}
 
-      - name: Build packages
-        run: |
-          pnpm --filter @user-service/types build
-          pnpm --filter @user-service/db build
-          pnpm --filter @user-service/server build
+      - name: Build workspace (topological)
+        run: pnpm -w -r build
 
       - name: Typecheck
-        run: pnpm -r exec tsc --noEmit --pretty false --skipLibCheck
+        run: pnpm -w -r exec tsc --noEmit --pretty false --skipLibCheck
 
       - name: Run server tests
         run: pnpm --filter @user-service/server test
