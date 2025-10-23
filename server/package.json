@@ -7,7 +7,7 @@
   "description": "Returnacy microservice that handles user registration and profile management",
   "main": "src/app.ts",
   "scripts": {
-    "prebuild": "pnpm --filter @user-service/db exec prisma generate || true && pnpm --filter @user-service/db build",
+    "prebuild": "pnpm --filter @user-service/types build && pnpm --filter @user-service/db exec prisma generate || true && pnpm --filter @user-service/db build",
     "build": "tsc -b .",
     "start": "node dist/src/app.js",
     "test": "vitest run"

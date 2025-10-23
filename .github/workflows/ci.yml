@@ -71,6 +71,7 @@ jobs:
 
       - name: Build packages
         run: |
+          pnpm --filter @user-service/types build
           pnpm --filter @user-service/db build
           pnpm --filter @user-service/server build
 
