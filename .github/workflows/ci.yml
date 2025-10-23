@@ -117,8 +117,8 @@ jobs:
 
       - name: Configure .npmrc for Docker build
         run: |
-          echo "@returnacy:registry=https://npm.pkg.github.com/" > .npmrc || true
-          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc || true
+          echo "@returnacy:registry=https://npm.pkg.github.com/" > .npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
 
       - name: Build server Docker image
         uses: docker/build-push-action@v6
@@ -126,12 +126,5 @@ jobs:
           context: .
           file: server/Dockerfile
           push: false
-          provenance: false
-          sbom: false
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.ref.name=${{ github.ref_name }}
-            org.opencontainers.image.title=user-server
           build-args: |
             GITHUB_PACKAGES_TOKEN=${{ secrets.GITHUB_TOKEN }}
