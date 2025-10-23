@@ -1,11 +1,19 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
+    "rootDir": ".",
     "composite": true,
     "declaration": true,
     "declarationMap": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+    },
+    "types": ["node"],              // optional; remove if you prefer auto inclusion
   },
-  "include": ["src/**/*"]
+  "references": [
+    { "path": "../types" }
+  ],
+  "include": ["src", "prisma", "tests"]
 }

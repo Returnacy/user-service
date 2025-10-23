@@ -4,12 +4,12 @@
   "author": "Riccardo Fabbian",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
     }
   },
   "scripts": {
@@ -17,8 +17,8 @@
     "test:watch": "vitest",
     "prebuild": "prisma generate --schema=./prisma/schema.prisma",
     "build": "tsc -b .",
-    "start": "node dist/prismaClient.js",
-    "seed": "node --loader ts-node/esm src/seed.ts"
+    "start": "node dist/src/prismaClient.js",
+    "seed": "node dist/src/seed.js"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",
@@ -33,5 +33,8 @@
   "dependencies": {
     "@prisma/client": "6.14.0",
     "@user-service/types": "workspace:*"
+  },
+  "prisma": {
+    "seed": "node ./dist/src/seed.js"
   }
 }

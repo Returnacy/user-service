@@ -1,20 +1,14 @@
 {
   "name": "@user-service/types",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "Riccardo Fabbian",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "scripts": {
     "build": "tsc -b",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+    "dev": "ts-node-dev --respawn --transpile-only index.ts"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

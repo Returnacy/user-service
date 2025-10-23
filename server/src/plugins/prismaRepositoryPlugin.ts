@@ -1,4 +1,5 @@
 import fp from 'fastify-plugin';
+
 import { RepositoryPrisma } from '@user-service/db';
 
 export default fp(async (fastify) => {

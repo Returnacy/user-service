@@ -7,7 +7,7 @@ const repo = new RepositoryPrisma();
 const brandId = 'brand_seed_1';
 const businessId = 'biz_seed_1';
 
-function randomPick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
+function randomPick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]!; }
 
 async function main() {
   // Disable seed by default unless explicitly allowed

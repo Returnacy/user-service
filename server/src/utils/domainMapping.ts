@@ -31,6 +31,6 @@ export function loadDomainMapping(): DomainMapping {
 export function resolveDomain(host?: string): { brandId: string | null; businessId: string } | null {
   if (!host) return null;
   const map = loadDomainMapping();
-  const hostname = host.toLowerCase().split(':')[0];
+  const hostname: string = (host as string).toLowerCase().split(':')[0] ?? '';
   return map[hostname] ?? null;
 }

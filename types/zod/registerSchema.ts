@@ -1,13 +1,8 @@
 import { z } from 'zod';
-
-export const membershipSchema = z.object({
-  brandId: z.string().nullable().optional().default(null),
-  businessId: z.string().nullable().optional().default(null),
-  roles: z.array(z.string()).default([])
-});
+import { membershipSchema } from './membershipSchema.js';
 
 export const registerSchema = z.object({
-  email: z.string().email(),
+  email: z.string(),
   password: z.string().min(8),
   phone: z.string().optional(),
   name: z.string(),
@@ -21,5 +16,3 @@ export const registerSchema = z.object({
   // initial membership to assign in Keycloak
   membership: membershipSchema.optional()
 });
-
-export type RegisterInput = z.infer<typeof registerSchema>;

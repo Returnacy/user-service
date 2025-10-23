@@ -1,18 +1,16 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "composite": true,
-    "declaration": true,
-    "declarationMap": true,
-    "outDir": "dist",
-  "types": ["node", "vitest"],
     "rootDir": ".",
+    "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@user-service/types": ["../types/src/index.ts"],
+      "@user-service/db": ["../db/src/index.ts"]
     },
     "tsBuildInfoFile": "dist/.tsbuildinfo",
-    "isolatedModules": true
+    "isolatedModules": true,
   },
   "references": [
     { "path": "../types" },

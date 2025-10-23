@@ -21,23 +21,25 @@ export class RepositoryPrisma {
   }
 
   async upsertUserByKeycloakSub(sub: string, data: Partial<User>): Promise<User> {
+    // Build update data without assigning explicit undefined (exactOptionalPropertyTypes)
+    const updateData: Prisma.UserUpdateInput = {};
+    if (data.email !== undefined) updateData.email = data.email as any;
+    if (data.phone !== undefined) updateData.phone = data.phone as any;
+    if (data.name !== undefined) updateData.name = data.name as any;
+    if (data.surname !== undefined) updateData.surname = data.surname as any;
+    if (data.birthday !== undefined) updateData.birthday = data.birthday as any;
+    if (data.gender !== undefined) updateData.gender = data.gender as any;
+    if ((data as any).preferences !== undefined) (updateData as any).preferences = (data as any).preferences;
+    if (data.userPrivacyPolicyAcceptance !== undefined) updateData.userPrivacyPolicyAcceptance = data.userPrivacyPolicyAcceptance as any;
+    if (data.userTermsAcceptance !== undefined) updateData.userTermsAcceptance = data.userTermsAcceptance as any;
+
     return prisma.user.upsert({
       where: { keycloakSub: sub },
-      update: {
-        email: data.email ?? undefined,
-        phone: data.phone ?? undefined,
-        name: data.name ?? undefined,
-        surname: data.surname ?? undefined,
-        birthday: data.birthday ?? undefined,
-        gender: data.gender ?? undefined,
-        preferences: (data as any).preferences ?? undefined,
-        userPrivacyPolicyAcceptance: data.userPrivacyPolicyAcceptance ?? undefined,
-        userTermsAcceptance: data.userTermsAcceptance ?? undefined,
-      },
+      update: updateData,
       create: {
         keycloakSub: sub,
         email: data.email || '',
-        phone: data.phone || null,
+        phone: data.phone || '',
         name: data.name || '',
         surname: data.surname || '',
         birthday: data.birthday || '',
