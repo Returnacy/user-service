@@ -10,11 +10,6 @@
     "strict": true,
     "outDir": "dist",
     "rootDir": ".",
-    "baseUrl": ".",
-    "paths": {
-      "@user-service/db": ["./db"],
-      "@user-service/types": ["./types"],
-      "@user-service/server/*": ["./server/src/*"]
-    }
+    "baseUrl": "."
   }
 }
