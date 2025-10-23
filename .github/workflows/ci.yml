@@ -61,11 +61,11 @@ jobs:
 
       - name: Generate Prisma Client
         working-directory: db
-        run: pnpm prisma generate --schema=./prisma/schema.prisma
+        run: pnpm exec prisma generate --schema=./prisma/schema.prisma
 
       - name: Apply schema (db push)
         working-directory: db
-        run: pnpm prisma db push --schema=./prisma/schema.prisma
+        run: pnpm exec prisma db push --schema=./prisma/schema.prisma
         env:
           DATABASE_URL: ${{ env.DATABASE_URL }}
 
