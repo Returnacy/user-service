@@ -1,0 +1,140 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  ADMIN
+  BUSINESS
+  USER
+  STAFF
+}
+
+model User {
+  id                             String            @id @default(uuid())
+  keycloakSub                    String            @unique // maps to Keycloak's "sub"
+  email                          String            // cached for convenience
+  phone                          String?           // optional phone (for SMS, etc.)
+  name                           String
+  surname                        String
+  birthday                       String
+  gender                         String?           // or enum
+  userTermsAcceptance            Boolean           @default(false)
+  userPrivacyPolicyAcceptance    Boolean           @default(false)
+  preferences                    Json?             @default("{}")
+  createdAt                      DateTime          @default(now())
+  updatedAt                      DateTime          @updatedAt
+
+  userMemberships                UserMembership[]
+  privacyPolicyAcceptances       PrivacyPolicyAcceptance[]
+  termsOfServiceAcceptances      TermsOfServiceAcceptance[]
+  marketingTermsAcceptances      MarketingTermsAcceptance[]
+  unsubscribes                   Unsubscribe?
+
+  @@index([keycloakSub])
+}
+
+model UserMembership {
+  id                             String            @id @default(cuid())
+  userId                         String
+  brandId                        String?
+  businessId                     String
+  createdAt                      DateTime          @default(now())
+  updatedAt                      DateTime          @updatedAt
+  endedAt                        DateTime?
+  lastVisitedAt                  DateTime          @default(now())
+  totalStamps                    Int               @default(0)
+  totalCoupons                   Int               @default(0)
+  validStamps                    Int               @default(0)
+  validCoupons                   Int               @default(0)
+
+  role                           UserRole          @default(USER)
+  user                           User              @relation(fields: [userId], references: [id])
+  // A user can have at most one membership per business
+  @@unique([userId, businessId], map: "userId_businessId")
+  // Enforce: a user can subscribe to at most one business per brand
+  @@unique([userId, brandId])
+}
+
+model Unsubscribe {
+  id                         String              @id @default(cuid())
+  userMembershipId           String              @unique
+  contact                    Json?               // snapshot (email/phone)
+  reason                     String?
+  createdAt                  DateTime            @default(now())
+
+  user                       User                @relation(fields: [userMembershipId], references: [id])
+}
+
+model PrivacyPolicy {
+  id                         String              @id @default(cuid())
+  version                    String
+  content                    String
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+
+  @@unique([version])
+}
+
+model PrivacyPolicyAcceptance {
+  id                         String              @id @default(cuid())
+  userId                     String
+  version                    String
+  ipAddress                  String?
+  userAgent                  String?
+  acceptedAt                 DateTime            @default(now())
+
+  user                       User                @relation(fields: [userId], references: [id])
+
+  @@unique([userId, version])
+}
+
+model TermsOfService {
+  id                         String              @id @default(cuid())
+  version                    String
+  content                    String
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+
+  @@unique([version])
+}
+
+model TermsOfServiceAcceptance {
+  id                         String              @id @default(cuid())
+  userId                     String
+  version                    String
+  ipAddress                  String?
+  userAgent                  String?
+  acceptedAt                 DateTime            @default(now())
+
+  user                       User                @relation(fields: [userId], references: [id])
+
+  @@unique([userId, version])
+}
+
+model MarketingTerms {
+  id                         String              @id @default(cuid())
+  version                    String
+  content                    String
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+
+  @@unique([version])
+}
+
+model MarketingTermsAcceptance {
+  id                         String              @id @default(cuid())
+  userId                     String
+  version                    String
+  ipAddress                  String?
+  userAgent                  String?
+  acceptedAt                 DateTime            @default(now())
+
+  user                       User                @relation(fields: [userId], references: [id])
+
+  @@unique([userId, version])
+}

@@ -1,0 +1,5 @@
+{
+  "localhost": { "brandId": "brand_seed_1", "businessId": "biz_seed_1" },
+  "yellow-pizza.local": { "brandId": null, "businessId": "b-yellow" },
+  "da-salva.local": { "brandId": null, "businessId": "b-salva" }
+}

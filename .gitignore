@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+.DS_Store
+userlist.txt
+docker-compose.prod.yml
+.secrets
+.vscode

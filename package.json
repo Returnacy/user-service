@@ -1,0 +1,21 @@
+{
+  "name": "user-service",
+  "private": true,
+  "version": "0.1.0",
+  "author": "Riccardo Fabbian",
+  "license": "MIT",
+  "scripts": {
+    "build:db": "pnpm --filter db build",
+    "build:server": "pnpm --filter server build",
+    "build": "pnpm -r build",
+    "test:server": "pnpm --filter server test",
+    "test:db": "pnpm --filter db test",
+    "test": "pnpm -r test -- --coverage",
+    "seed": "pnpm --filter db seed"
+  },
+  "workspaces": [
+    "types",
+    "db",
+    "server"
+  ]
+}

@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ '*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Test & Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: user_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/user_dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-v1-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-v1-
+
+      - name: Configure pnpm store path
+        run: pnpm config set store-dir ~/.pnpm-store
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        working-directory: db
+        run: pnpm prisma generate --schema=./prisma/schema.prisma
+
+      - name: Apply schema (db push)
+        working-directory: db
+        run: pnpm prisma db push --schema=./prisma/schema.prisma
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+      - name: Build packages
+        run: |
+          pnpm --filter @user-service/db build
+          pnpm --filter @user-service/server build
+
+      - name: Typecheck
+        run: pnpm -r exec tsc --noEmit --pretty false --skipLibCheck
+
+      - name: Run server tests
+        run: pnpm --filter @user-service/server test
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+
+  docker:
+    name: Build Docker Image
+    needs: build-and-test
+    if: needs.build-and-test.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure .npmrc for Docker build
+        run: |
+          echo "@returnacy:registry=https://npm.pkg.github.com/" > .npmrc || true
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc || true
+
+      - name: Build server Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: false
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
+            org.opencontainers.image.title=user-server
+          build-args: |
+            GITHUB_PACKAGES_TOKEN=${{ secrets.GITHUB_TOKEN }}
