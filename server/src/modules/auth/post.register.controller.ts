@@ -5,6 +5,10 @@ import { registerSchema } from '@user-service/types';
 
 export async function postRegisterHandler(request: FastifyRequest, reply: FastifyReply) {
   try {
+    const DEBUG = process.env.DEBUG_MEMBERSHIP === '1';
+    const dbg = (data: any, msg: string) => {
+      if (DEBUG) request.log.info({ tag: 'membership.debug', ...data }, msg);
+    };
     // Normalize legacy aliases sent by some frontends
     const raw = (request.body ?? {}) as any;
     const normalized: any = { ...raw };
@@ -15,7 +19,7 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
     if (normalized.acceptedPrivacyPolicy !== undefined && normalized.acceptPrivacyPolicy === undefined) {
       normalized.acceptPrivacyPolicy = !!normalized.acceptedPrivacyPolicy;
     }
-  const input = registerSchema.parse(normalized);
+    const input = registerSchema.parse(normalized);
     const repository = (request.server as any).repository as { upsertUserByKeycloakSub: Function };
     const tokenService = (request.server as any).keycloakTokenService as { getAccessToken: () => Promise<string> };
 
@@ -23,68 +27,35 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
     const baseUrl = process.env.KEYCLOAK_BASE_URL!;
     const realm = process.env.KEYCLOAK_REALM!;
 
-    // 1) Create user in Keycloak
-    const attributes: any = {};
-    // derive membership from (in order): explicit input, domain mapping (host/origin/referer), env fallbacks
-    const hostHeader = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string) || '';
-    // Try to infer tenant from frontend origin when API host differs
-    let originHost = '';
-    try {
-      const o = (request.headers['origin'] as string) || '';
-      if (o) originHost = new URL(o).host;
-    } catch {}
-    let refererHost = '';
-    try {
-      const r = (request.headers['referer'] as string) || '';
-      if (r) refererHost = new URL(r).host;
-    } catch {}
+  // 1) Create user in Keycloak
+  const attributes: any = {};
+  // derive default membership from domain mapping using host headers
+  const xfh = request.headers['x-forwarded-host'] as string | undefined;
+  const host = request.headers['host'] as string | undefined;
+  const origin = request.headers['origin'] as string | undefined;
+  const referer = request.headers['referer'] as string | undefined;
+  let originHost = '';
+  try { if (origin) originHost = new URL(origin).host; } catch {}
+  let refererHost = '';
+  try { if (referer) refererHost = new URL(referer).host; } catch {}
+  const resolvedFromHost = host ? resolveDomain(host) : null;
+  const resolvedFromXfh = xfh ? resolveDomain(xfh) : null;
+  const resolvedFromOrigin = originHost ? resolveDomain(originHost) : null;
+  const resolvedFromReferer = refererHost ? resolveDomain(refererHost) : null;
+  const domain = resolvedFromHost || resolvedFromXfh || resolvedFromOrigin || resolvedFromReferer;
 
-    const domainCandidates = [hostHeader, originHost, refererHost].filter(Boolean);
-    let domain: ReturnType<typeof resolveDomain> = null;
-    for (const h of domainCandidates) {
-      domain = resolveDomain(h);
-      if (domain) break;
-    }
+  dbg({ xfh, host, origin, referer, originHost, refererHost, resolvedFromHost, resolvedFromXfh, resolvedFromOrigin, resolvedFromReferer }, 'Resolved domain candidates');
 
-    // env fallbacks (useful on preview/staging where mapping isn't set yet)
-    const envDefaultBusinessId = process.env.DEFAULT_MEMBERSHIP_BUSINESS_ID
-      || process.env.BUSINESS_ID_DEFAULT
-      || process.env.BUSINESS_ID
-      || null;
-    const envDefaultBrandId = process.env.DEFAULT_MEMBERSHIP_BRAND_ID || null;
-
-    // compute final membership
-    const explicit = input.membership
-      ? [{ brandId: input.membership.brandId ?? null, businessId: input.membership.businessId ?? null, roles: ['user'] }]
-      : [];
-    const fromDomain = (!explicit.length && domain)
-      ? [{ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }]
-      : [];
-    const fromEnv = (!explicit.length && !fromDomain.length && envDefaultBusinessId)
-      ? [{ brandId: envDefaultBrandId, businessId: envDefaultBusinessId, roles: ['user'] }]
-      : [];
-    const computedMembership = explicit.length ? explicit : (fromDomain.length ? fromDomain : fromEnv);
+  const defaultMembership = domain ? [{ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }] : [];
+  dbg({ defaultMembership }, 'Computed defaultMembership');
 
     if (input.phone) {
       // Match Keycloak realm mapper expecting user attribute 'phoneNumber'
       attributes.phoneNumber = input.phone;
     }
 
-    if (computedMembership.length === 0) {
-      // Avoid creating a user without memberships when the realm expects it
-      return reply.status(400).send({
-        error: 'REGISTRATION_FAILED',
-        detail: {
-          errorMessage: 'error-user-attribute-required',
-          field: 'memberships',
-          params: ['memberships'],
-          hint: 'Provide membership in request, configure DOMAIN_MAPPING_FILE with your host, or set DEFAULT_MEMBERSHIP_BUSINESS_ID.'
-        }
-      });
-    }
-
-    // Keycloak expects attribute arrays of strings, we store one JSON string entry
-    attributes.memberships = [JSON.stringify(computedMembership)];
+  attributes.memberships = [JSON.stringify(defaultMembership)];
+  dbg({ attributes }, 'Keycloak attributes payload');
 
     const kcResp = await axios.post(
       `${baseUrl}/admin/realms/${realm}/users`,
@@ -100,6 +71,7 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
       },
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
+    dbg({ status: kcResp.status, headers: { location: kcResp.headers['location'] } }, 'Keycloak create user response');
 
     // location header contains user id
     const location = kcResp.headers['location'] as string | undefined;
@@ -160,12 +132,10 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
 
     // Create local membership based on domain if present
     if (domain) {
+      dbg({ domain }, 'Upserting local membership derived from domain');
       await (repository as any).upsertMembership(dbUser.id, { businessId: domain.businessId, brandId: domain.brandId, role: 'USER' });
-    } else if (computedMembership.length > 0) {
-      const m = computedMembership[0]!;
-      if (m.businessId) {
-        await (repository as any).upsertMembership(dbUser.id, { businessId: m.businessId, brandId: m.brandId ?? null, role: 'USER' });
-      }
+    } else {
+      dbg({}, 'No domain-derived membership available; skipping local membership upsert');
     }
 
     // Save acceptances (latest versions if exist)
