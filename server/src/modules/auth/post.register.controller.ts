@@ -24,9 +24,9 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
     const realm = process.env.KEYCLOAK_REALM!;
 
     // 1) Create user in Keycloak
-  const attributes: any = {};
-    // derive default membership from domain
-    const host = request.headers['x-forwarded-host'] as string || request.headers['host'] as string;
+    const attributes: any = {};
+    // derive default membership from domain or environment fallbacks
+    const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
     const domain = resolveDomain(host);
 
     const defaultMembership = domain ? [{ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }] : [];
@@ -36,13 +36,7 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
       attributes.phoneNumber = input.phone;
     }
 
-    if (input.membership || defaultMembership.length > 0) {
-      // attribute must be an array of strings in Keycloak
-      const m = input.membership
-        ? [{ brandId: input.membership.brandId ?? null, businessId: input.membership.businessId ?? null, roles: ['user'] }]
-        : defaultMembership;
-      attributes.memberships = [JSON.stringify(m)];
-    }
+    attributes.memberships = [JSON.stringify(defaultMembership)];
 
     const kcResp = await axios.post(
       `${baseUrl}/admin/realms/${realm}/users`,
