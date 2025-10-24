@@ -2,6 +2,33 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 
 type Rule = { database: 'USER' | string; field: string; operator: string; value: any };
 
+function todayPartsUTC() {
+  const d = new Date();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return { mm, dd };
+}
+
+// Support simple dynamic placeholders in rule values so campaigns can remain static while rules are dynamic.
+// Supported tokens (string equality or wrapped with ${...} or {{...}}):
+//  - TODAY_MM_DD -> "MM-DD" (e.g., "10-24")
+//  - TODAY_SUFFIX_MM_DD -> "-MM-DD" (e.g., "-10-24") to match suffix in YYYY-MM-DD fields using CONTAINS
+function resolveDynamicValue(field: string, operator: string, value: any): any {
+  if (typeof value !== 'string') return value;
+  const raw = value.trim();
+  const unwrap = (s: string) => s.replace(/^\$\{/, '').replace(/^\{\{/, '').replace(/\}\}$/, '').replace(/\}$/, '');
+  const token = unwrap(raw);
+  if (token === 'TODAY_MM_DD') {
+    const { mm, dd } = todayPartsUTC();
+    return `${mm}-${dd}`;
+  }
+  if (token === 'TODAY_SUFFIX_MM_DD') {
+    const { mm, dd } = todayPartsUTC();
+    return `-${mm}-${dd}`;
+  }
+  return value;
+}
+
 function matchesOperator(fieldValue: any, operator: string, value: any): boolean {
   switch (operator) {
     case 'EQUALS': return fieldValue === value;
@@ -56,6 +83,7 @@ export async function postInternalUsersQueryHandler(request: FastifyRequest, rep
 
   // Only USER database rules are handled here
   const rules = (targetingRules || []).filter(r => r.database === 'USER');
+  const processedRules = rules.map(r => ({ ...r, value: resolveDynamicValue(r.field, r.operator, r.value) }));
 
   // Simple filtering in DB: pull candidates and filter in memory (replace with SQL where mapping later)
   const candidates = await repository.findUsersForTargeting(limit ?? 1000);
@@ -81,7 +109,7 @@ export async function postInternalUsersQueryHandler(request: FastifyRequest, rep
     return { ...u, stamps, tokens };
   }));
 
-  const filtered = enriched.filter((u: any) => rules.every(r => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
+  const filtered = enriched.filter((u: any) => processedRules.every(r => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
   const sliced = filtered.slice(0, limit ?? 100);
 
   // Project to TargetUser shape
