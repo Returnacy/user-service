@@ -1,5 +1,4 @@
 {
-  "localhost": { "brandId": "brand_seed_1", "businessId": "biz_seed_1" },
   "business.returnacy.app": { "brandId": "brand_seed_1", "businessId": "biz_seed_1" },
   "example.returnacy.app": { "brandId": "brand_seed_1", "businessId": "biz_seed_1" }
 }
