@@ -1,5 +1,5 @@
 {
   "localhost": { "brandId": "brand_seed_1", "businessId": "biz_seed_1" },
-  "yellow-pizza.local": { "brandId": null, "businessId": "b-yellow" },
-  "da-salva.local": { "brandId": null, "businessId": "b-salva" }
+  "business.returnacy.app": { "brandId": "brand_seed_1", "businessId": "biz_seed_1" },
+  "example.returnacy.app": { "brandId": null, "businessId": "biz_seed_1" }
 }
