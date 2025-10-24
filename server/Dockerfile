@@ -31,7 +31,7 @@ RUN pnpm run build
 # Copy built db package into server dist as a shim for runtime resolution
 RUN mkdir -p ./dist/node_modules/@user-service/db/dist \
 	&& cp -r ../db/dist/* ./dist/node_modules/@user-service/db/dist/ \
-	&& printf '{"name":"@user-service/db","type":"module","main":"dist/index.js"}' > ./dist/node_modules/@user-service/db/package.json
+	&& printf '{"name":"@user-service/db","type":"module","main":"dist/src/index.js"}' > ./dist/node_modules/@user-service/db/package.json
 
 # Also copy domain mapping into locations our loader will probe
 RUN cp domain-mapping.json ./dist/domain-mapping.json || true \
