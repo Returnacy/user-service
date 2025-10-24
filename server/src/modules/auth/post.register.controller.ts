@@ -15,7 +15,7 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
     if (normalized.acceptedPrivacyPolicy !== undefined && normalized.acceptPrivacyPolicy === undefined) {
       normalized.acceptPrivacyPolicy = !!normalized.acceptedPrivacyPolicy;
     }
-    const input = registerSchema.parse(normalized);
+  const input = registerSchema.parse(normalized);
     const repository = (request.server as any).repository as { upsertUserByKeycloakSub: Function };
     const tokenService = (request.server as any).keycloakTokenService as { getAccessToken: () => Promise<string> };
 
@@ -25,18 +25,66 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
 
     // 1) Create user in Keycloak
     const attributes: any = {};
-    // derive default membership from domain or environment fallbacks
-    const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
-    const domain = resolveDomain(host);
+    // derive membership from (in order): explicit input, domain mapping (host/origin/referer), env fallbacks
+    const hostHeader = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string) || '';
+    // Try to infer tenant from frontend origin when API host differs
+    let originHost = '';
+    try {
+      const o = (request.headers['origin'] as string) || '';
+      if (o) originHost = new URL(o).host;
+    } catch {}
+    let refererHost = '';
+    try {
+      const r = (request.headers['referer'] as string) || '';
+      if (r) refererHost = new URL(r).host;
+    } catch {}
 
-    const defaultMembership = domain ? [{ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }] : [];
+    const domainCandidates = [hostHeader, originHost, refererHost].filter(Boolean);
+    let domain: ReturnType<typeof resolveDomain> = null;
+    for (const h of domainCandidates) {
+      domain = resolveDomain(h);
+      if (domain) break;
+    }
+
+    // env fallbacks (useful on preview/staging where mapping isn't set yet)
+    const envDefaultBusinessId = process.env.DEFAULT_MEMBERSHIP_BUSINESS_ID
+      || process.env.BUSINESS_ID_DEFAULT
+      || process.env.BUSINESS_ID
+      || null;
+    const envDefaultBrandId = process.env.DEFAULT_MEMBERSHIP_BRAND_ID || null;
+
+    // compute final membership
+    const explicit = input.membership
+      ? [{ brandId: input.membership.brandId ?? null, businessId: input.membership.businessId ?? null, roles: ['user'] }]
+      : [];
+    const fromDomain = (!explicit.length && domain)
+      ? [{ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }]
+      : [];
+    const fromEnv = (!explicit.length && !fromDomain.length && envDefaultBusinessId)
+      ? [{ brandId: envDefaultBrandId, businessId: envDefaultBusinessId, roles: ['user'] }]
+      : [];
+    const computedMembership = explicit.length ? explicit : (fromDomain.length ? fromDomain : fromEnv);
 
     if (input.phone) {
       // Match Keycloak realm mapper expecting user attribute 'phoneNumber'
       attributes.phoneNumber = input.phone;
     }
 
-    attributes.memberships = [JSON.stringify(defaultMembership)];
+    if (computedMembership.length === 0) {
+      // Avoid creating a user without memberships when the realm expects it
+      return reply.status(400).send({
+        error: 'REGISTRATION_FAILED',
+        detail: {
+          errorMessage: 'error-user-attribute-required',
+          field: 'memberships',
+          params: ['memberships'],
+          hint: 'Provide membership in request, configure DOMAIN_MAPPING_FILE with your host, or set DEFAULT_MEMBERSHIP_BUSINESS_ID.'
+        }
+      });
+    }
+
+    // Keycloak expects attribute arrays of strings, we store one JSON string entry
+    attributes.memberships = [JSON.stringify(computedMembership)];
 
     const kcResp = await axios.post(
       `${baseUrl}/admin/realms/${realm}/users`,
@@ -113,6 +161,11 @@ export async function postRegisterHandler(request: FastifyRequest, reply: Fastif
     // Create local membership based on domain if present
     if (domain) {
       await (repository as any).upsertMembership(dbUser.id, { businessId: domain.businessId, brandId: domain.brandId, role: 'USER' });
+    } else if (computedMembership.length > 0) {
+      const m = computedMembership[0]!;
+      if (m.businessId) {
+        await (repository as any).upsertMembership(dbUser.id, { businessId: m.businessId, brandId: m.brandId ?? null, role: 'USER' });
+      }
     }
 
     // Save acceptances (latest versions if exist)
