@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { loadDomainMapping } from '../../../utils/domainMapping.js';
 
 type Rule = { database: 'USER' | string; field: string; operator: string; value: any };
 
@@ -78,7 +79,7 @@ export async function postInternalUsersQueryHandler(request: FastifyRequest, rep
   const isService = (azp && allowedServices.includes(azp)) || audList.some(a => allowedServices.includes(a));
   if (!isService) return reply.status(403).send({ error: 'FORBIDDEN' });
 
-  const { targetingRules, limit, businessId, brandId } = request.body as { targetingRules: Rule[]; limit: number; businessId?: string | null; brandId?: string | null };
+  const { targetingRules, limit, businessId, brandId, prize } = request.body as { targetingRules: Rule[]; limit: number; businessId?: string | null; brandId?: string | null; prize?: { id: string } };
   const repository = (request.server as any).repository as any;
 
   // Only USER database rules are handled here
@@ -134,6 +135,44 @@ export async function postInternalUsersQueryHandler(request: FastifyRequest, rep
       tokens: u.tokens ?? null,
     },
   }));
+
+  // If a prize id is provided, increment membership coupon counters locally.
+  // The actual coupon issuance is handled by campaign-service scheduler.
+  if (prize && prize.id) {
+    // Resolve target businessId: prefer explicit businessId; else derive from brandId via domain mapping (first match)
+    let targetBusinessId: string | null = businessId || null;
+    if (!targetBusinessId && brandId) {
+      try {
+        const map = loadDomainMapping();
+        for (const v of Object.values(map)) {
+          const entry = v as any;
+          if (entry && entry.brandId === brandId && entry.businessId) {
+            targetBusinessId = entry.businessId;
+            break;
+          }
+        }
+      } catch {}
+    }
+
+    if (targetBusinessId) {
+      const concurrency = 12;
+      const queue = [...users];
+      const workers: Promise<void>[] = [];
+      const runWorker = async () => {
+        while (queue.length > 0) {
+          const u = queue.shift()!;
+          try {
+            await repository.setMembershipCounters(u.id, targetBusinessId!, { totalCouponsDelta: 1 });
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('[user-service] failed to increment coupon counter for user', u.id, (e as any)?.message);
+          }
+        }
+      };
+      for (let i = 0; i < concurrency; i++) workers.push(runWorker());
+      await Promise.all(workers);
+    }
+  }
 
   return reply.send({ users });
 }
