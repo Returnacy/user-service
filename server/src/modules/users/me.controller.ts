@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import axios from 'axios';
-import { resolveDomain } from '../../utils/domainMapping.js';
+import { resolveDomain, resolveBusinessServiceUrl } from '../../utils/domainMapping.js';
 
 export async function getMeHandler(request: FastifyRequest, reply: FastifyReply) {
   const auth = (request as any).auth as any;
@@ -18,15 +18,21 @@ export async function getMeHandler(request: FastifyRequest, reply: FastifyReply)
   const user = await repository.findUserByKeycloakSub(sub);
 
   // Resolve business/brand from host
-  const host = request.headers['x-forwarded-host'] as string || request.headers['host'] as string;
+  const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
   const domain = resolveDomain(host);
+  const forwardedProto = (request.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
+  const businessServiceBase = resolveBusinessServiceUrl({
+    businessId: domain?.businessId ?? null,
+    host,
+    scheme: forwardedProto || request.protocol,
+  });
 
   if (domain) {
     const memberships = await repository.listMemberships(user.id);
     const hasMembership = memberships.some((m: any) => m.businessId === domain.businessId);
     if (!hasMembership) {
       // Auto-enroll this user to the business for this domain with default 'user' role
-  await repository.addMembership(user.id, { businessId: domain.businessId, brandId: domain.brandId, role: 'USER' });
+      await repository.addMembership(user.id, { businessId: domain.businessId, brandId: domain.brandId, role: 'USER' });
 
       // Update Keycloak memberships attribute by merging existing memberships in token with new one
       // Normalize token memberships: Keycloak mappers may emit either an array of strings (JSON) or array of objects.
@@ -113,26 +119,57 @@ export async function getMeHandler(request: FastifyRequest, reply: FastifyReply)
     return isNaN(n) ? 0 : n;
   })();
 
+  const usedCoupons = (() => {
+    const total = (inScopeMembership as any)?.totalCoupons;
+    const asNumber = total == null ? 0 : Number(total);
+    if (!Number.isFinite(asNumber)) return 0;
+    return Math.max(0, asNumber - validCoupons);
+  })();
+
   // Optionally fetch coupons list from business-service for this tenant
   let couponsList: any[] = [];
-  if (businessId) {
+  let nextPrize: { name: string | null; stampsNeededForNextPrize: number; stampsNextPrize: number; stampsLastPrize: number } | null = null;
+  if (businessId && businessServiceBase) {
+    const base = businessServiceBase.replace(/\/$/, '');
+    const headers: Record<string, string> = {};
     try {
       const svcToken = await tokenService.getAccessToken();
-      const headers = svcToken ? { Authorization: `Bearer ${svcToken}` } : {};
-      const base = process.env.BUSINESS_SERVICE_URL || 'http://business-server:3000';
-      const res = await axios.get(`${base.replace(/\/$/, '')}/api/v1/coupons`, {
+      if (svcToken) headers.Authorization = `Bearer ${svcToken}`;
+    } catch {}
+
+    try {
+      const res = await axios.get(`${base}/api/v1/coupons`, {
         params: { userId: user.id, businessId },
         headers,
       });
-      const coupons = (res.data && res.data.coupons) ? res.data.coupons : [];
-      // Only keep new (unredeemed and not expired) coupons for the /me page
+      const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
+      const coupons = Array.isArray(payload) ? payload : [];
       const now = Date.now();
-      couponsList = Array.isArray(coupons)
-        ? coupons.filter((c: any) => !c?.isRedeemed && (!c?.expiredAt || new Date(c.expiredAt).getTime() > now))
-        : [];
-    } catch (e) {
-      // swallow errors to not block /me
+      couponsList = coupons.filter((c: any) => !c?.isRedeemed && (!c?.expiredAt || new Date(c.expiredAt).getTime() > now));
+    } catch {
       couponsList = [];
+    }
+
+    try {
+      const res = await axios.post(`${base}/api/v1/prizes/progression`, {
+        businessId,
+        stamps: Math.max(0, Number(validStamps) || 0),
+      }, { headers });
+      const data = (res.data && res.data.data != null) ? res.data.data : res.data;
+      if (data && typeof data === 'object') {
+        const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
+        const stampsNextPrize = Number((data as any).stampsNextPrize ?? 0) || 0;
+        const needed = Number((data as any).stampsNeededForNextPrize);
+        const fallbackNeeded = Math.max(0, stampsNextPrize - Math.max(0, Number(validStamps) || 0));
+        nextPrize = {
+          name: (data as any).nextPrizeName ?? null,
+          stampsLastPrize,
+          stampsNextPrize,
+          stampsNeededForNextPrize: Number.isFinite(needed) ? Math.max(0, needed) : fallbackNeeded,
+        };
+      }
+    } catch {
+      nextPrize = null;
     }
   }
 
@@ -154,7 +191,7 @@ export async function getMeHandler(request: FastifyRequest, reply: FastifyReply)
     })),
     // Aggregated client fields expected by SPA
     stamps: { validStamps },
-    coupons: { usedCoupons: 0, validCoupons, coupons: couponsList.map((c: any) => ({
+    coupons: { usedCoupons, validCoupons, coupons: couponsList.map((c: any) => ({
       id: c.id,
       code: c.code,
       isRedeemed: !!c.isRedeemed,
@@ -162,6 +199,6 @@ export async function getMeHandler(request: FastifyRequest, reply: FastifyReply)
       prize: c.prize ? { name: c.prize.name, pointsRequired: c.prize.pointsRequired } : undefined,
       createdAt: c.createdAt,
     })) },
-    nextPrize: { name: 'Prossimo premio', stampsNeededForNextPrize: 15, stampsNextPrize: 15, stampsLastPrize: 0 },
+    nextPrize,
   });
 }
