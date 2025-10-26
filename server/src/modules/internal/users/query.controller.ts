@@ -162,7 +162,11 @@ export async function postInternalUsersQueryHandler(request: FastifyRequest, rep
         while (queue.length > 0) {
           const u = queue.shift()!;
           try {
-            await repository.setMembershipCounters(u.id, targetBusinessId!, { totalCouponsDelta: 1 });
+            // Read current membership to compute next validCoupons value
+            const m = await repository.getMembership(u.id, targetBusinessId!);
+            const nextValid = (m?.validCoupons ?? 0) + 1;
+            const nextTotal = (m?.totalCoupons ?? 0) + 1;
+            await repository.setMembershipCounters(u.id, targetBusinessId!, { validCoupons: nextValid, totalCoupons: nextTotal });
           } catch (e) {
             // eslint-disable-next-line no-console
             console.warn('[user-service] failed to increment coupon counter for user', u.id, (e as any)?.message);
