@@ -75,7 +75,7 @@ export function resolveBusinessServiceUrl(options: { businessId?: string | null;
     const rawHost = String(options.host).split(',')[0]?.trim() ?? '';
     if (rawHost) {
       const hostnameOnly = rawHost.toLowerCase().split(':')[0] ?? rawHost.toLowerCase();
-      if (hostnameOnly) hostCandidates.push(hostnameOnly);
+      if (hostnameOnly && map[hostnameOnly]) hostCandidates.push(hostnameOnly);
     }
   }
 
