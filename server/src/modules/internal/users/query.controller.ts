@@ -86,7 +86,15 @@ export async function postInternalUsersQueryHandler(request: FastifyRequest, rep
   const processedRules = rules.map(r => ({ ...r, value: resolveDynamicValue(r.field, r.operator, r.value) }));
 
   // Simple filtering in DB: pull candidates and filter in memory (replace with SQL where mapping later)
-  const candidates = await repository.findUsersForTargeting(limit ?? 1000);
+  let candidates: any[];
+  const take = limit ?? 1000;
+  if (businessId) {
+    candidates = await (repository.findUsersForTargetingByBusiness?.(businessId, take) ?? repository.findUsersForTargeting(take));
+  } else if (brandId) {
+    candidates = await (repository.findUsersForTargetingByBrand?.(brandId, take) ?? repository.findUsersForTargeting(take));
+  } else {
+    candidates = await repository.findUsersForTargeting(take);
+  }
 
   // Enrich candidates with membership-derived fields (stamps, tokens) based on scope
   const enriched = await Promise.all(candidates.map(async (u: any) => {

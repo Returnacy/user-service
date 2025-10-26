@@ -117,6 +117,32 @@ export class RepositoryPrisma {
     return prisma.user.findMany({ take: limit, orderBy: { createdAt: 'desc' } });
   }
 
+  // Targeting with pre-filter by membership businessId
+  async findUsersForTargetingByBusiness(businessId: string, limit: number): Promise<User[]> {
+    return prisma.user.findMany({
+      where: {
+        userMemberships: {
+          some: { businessId }
+        }
+      },
+      take: limit,
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  // Targeting with pre-filter by membership brandId
+  async findUsersForTargetingByBrand(brandId: string, limit: number): Promise<User[]> {
+    return prisma.user.findMany({
+      where: {
+        userMemberships: {
+          some: { brandId }
+        }
+      },
+      take: limit,
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
   async findUserById(userId: string): Promise<User | null> {
     return prisma.user.findUnique({ where: { id: userId } });
   }
