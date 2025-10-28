@@ -16,8 +16,12 @@ export class RepositoryPrisma {
     return prisma.user.findFirst({ where: { email } });
   }
 
+  async findUserByGoogleSub(googleSub: string): Promise<User | null> {
+  return prisma.user.findUnique({ where: { googleSub } as any });
+  }
+
   async createUser(data: Omit<Prisma.UserCreateInput, 'userMemberships'> & { userMemberships?: Prisma.UserMembershipCreateNestedManyWithoutUserInput }): Promise<User> {
-    return prisma.user.create({ data });
+  return prisma.user.create({ data: data as any });
   }
 
   async upsertUserByKeycloakSub(sub: string, data: Partial<User>): Promise<User> {
@@ -29,7 +33,8 @@ export class RepositoryPrisma {
     if (data.surname !== undefined) updateData.surname = data.surname as any;
     if (data.birthday !== undefined) updateData.birthday = data.birthday as any;
     if (data.gender !== undefined) updateData.gender = data.gender as any;
-    if ((data as any).preferences !== undefined) (updateData as any).preferences = (data as any).preferences;
+  if ((data as any).preferences !== undefined) (updateData as any).preferences = (data as any).preferences;
+  if ((data as any).googleSub !== undefined) (updateData as any).googleSub = (data as any).googleSub ?? null;
     if (data.userPrivacyPolicyAcceptance !== undefined) updateData.userPrivacyPolicyAcceptance = data.userPrivacyPolicyAcceptance as any;
     if (data.userTermsAcceptance !== undefined) updateData.userTermsAcceptance = data.userTermsAcceptance as any;
 
@@ -45,9 +50,10 @@ export class RepositoryPrisma {
         birthday: data.birthday || '',
         gender: data.gender || null,
         preferences: (data as any).preferences ?? {},
+  googleSub: (data as any).googleSub ?? null,
         userPrivacyPolicyAcceptance: data.userPrivacyPolicyAcceptance ?? false,
         userTermsAcceptance: data.userTermsAcceptance ?? false,
-      }
+      } as any,
     });
   }
 

@@ -19,6 +19,7 @@ model User {
   keycloakSub                    String            @unique // maps to Keycloak's "sub"
   email                          String            // cached for convenience
   phone                          String?           // optional phone (for SMS, etc.)
+  googleSub                      String?           @unique
   name                           String
   surname                        String
   birthday                       String
