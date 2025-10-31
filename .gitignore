@@ -6,3 +6,4 @@ userlist.txt
 docker-compose.prod.yml
 .secrets
 .vscode
+migrations
