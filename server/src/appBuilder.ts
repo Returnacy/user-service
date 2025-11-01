@@ -6,9 +6,10 @@ import keycloakAuthPlugin from './plugins/keycloakAuthPlugin.js';
 import userAuthPlugin from './plugins/userAuthPlugin.js';
 
 import { healthRoute } from './modules/health/health.route.js';
-import { authRoutes } from './modules/auth/index.route.js';
-import { usersRoutes, usersInternalRoutes } from './modules/users/index.route.js';
-import { postInternalUsersQueryHandler } from './modules/internal/users/query.controller.js';
+import { authRoute } from './modules/api/v1/auth/auth.route.js';
+import { meRoute } from './modules/api/v1/me/me.route.js';
+import { usersRoute } from './modules/api/v1/users/users.route.js';
+import { internalUsersRoute } from './modules/internal/v1/users/users.route.js';
 
 type Overrides = {
   repository?: any;
@@ -36,10 +37,10 @@ export async function buildServer(opts?: { overrides?: Overrides }) {
   await server.register(userAuthPlugin);
 
   await server.register(healthRoute);
-  await server.register(authRoutes, { prefix: '/api/v1/auth' });
-  await server.register(usersRoutes, { prefix: '/api/v1' });
-  server.post('/internal/v1/users/query', { handler: postInternalUsersQueryHandler });
-  await server.register(usersInternalRoutes);
+  await server.register(authRoute, { prefix: '/api/v1/auth' });
+  await server.register(meRoute, { prefix: '/api/v1/me' });
+  await server.register(usersRoute, { prefix: '/api/v1/users' });
+  await server.register(internalUsersRoute, { prefix: '/internal/v1/users' });
 
   return server;
 }
