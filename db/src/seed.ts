@@ -4,8 +4,8 @@ import { RepositoryPrisma } from './repository.prisma.js';
 const repo = new RepositoryPrisma();
 
 // Align with campaign-service seed identifiers
-const brandId = 'brand_seed_1';
-const businessId = 'biz_seed_1';
+const brandId = '385d4ebb-4c4b-46e9-8701-0d71bfd7ce47';
+const businessId = 'af941888-ec4c-458e-b905-21673241af3e';
 
 function randomPick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]!; }
 
