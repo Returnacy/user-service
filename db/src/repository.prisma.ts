@@ -1,6 +1,14 @@
 import { prisma } from './prismaClient.js';
 import type { Prisma, User, UserMembership, UserRole } from '@prisma/client';
 
+type WalletPassRecord = {
+  id: string;
+  userMembershipId: string;
+  objectId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export class RepositoryPrisma {
   async healthCheck() {
     await prisma.$queryRaw`SELECT 1`;
@@ -86,6 +94,36 @@ export class RepositoryPrisma {
 
   async getMembership(userId: string, businessId: string): Promise<UserMembership | null> {
     return prisma.userMembership.findUnique({ where: { userId_businessId: { userId, businessId } } as any });
+  }
+
+  async getMembershipWithWalletPass(userId: string, businessId: string): Promise<(UserMembership & { walletPass: WalletPassRecord | null }) | null> {
+    return prisma.userMembership.findUnique({
+      where: { userId_businessId: { userId, businessId } } as any,
+      include: { walletPass: true } as any,
+    }) as any;
+  }
+
+  async findWalletPass(userId: string, businessId: string): Promise<WalletPassRecord | null> {
+    const membership = await this.getMembershipWithWalletPass(userId, businessId);
+    return membership?.walletPass ?? null;
+  }
+
+  async upsertWalletPass(userId: string, businessId: string, payload: { objectId?: string | null }): Promise<WalletPassRecord> {
+    const membership = await this.getMembership(userId, businessId);
+    if (!membership) {
+      throw Object.assign(new Error('MEMBERSHIP_NOT_FOUND'), { code: 'MEMBERSHIP_NOT_FOUND' });
+    }
+
+    return (prisma as any).walletPass.upsert({
+      where: { userMembershipId: membership.id } as any,
+      update: {
+        objectId: payload.objectId ?? null,
+      },
+      create: {
+        userMembershipId: membership.id,
+        objectId: payload.objectId ?? null,
+      },
+    }) as any;
   }
 
   async setMembershipCounters(userId: string, businessId: string, counters: { validStamps?: number; validCoupons?: number; totalStampsDelta?: number; totalCouponsDelta?: number }) {

@@ -6,6 +6,8 @@ import { postAcceptancesHandler } from './post.acceptances.controller.js';
 import { postProfileHandler } from './post.profile.controller.js';
 import { getUserByIdHandler } from './get.user.controller.js';
 import { serviceUpdateMembershipCountersHandler } from './post.membership-counters.internal.controller.js';
+import { serviceGetWalletPassHandler } from './get.walletPass.internal.controller.js';
+import { serviceUpsertWalletPassHandler } from './post.walletPass.internal.controller.js';
 
 export async function usersRoutes(server: FastifyInstance) {
   server.get('/me', { preHandler: [], handler: getMeHandler });
@@ -17,4 +19,6 @@ export async function usersRoutes(server: FastifyInstance) {
 
 export async function usersInternalRoutes(server: FastifyInstance) {
   server.post('/internal/v1/users/:userId/memberships/counters', { preHandler: [], handler: serviceUpdateMembershipCountersHandler as any });
+  server.get('/internal/v1/users/:userId/memberships/:businessId/wallet-pass', { preHandler: [], handler: serviceGetWalletPassHandler as any });
+  server.post('/internal/v1/users/:userId/memberships/:businessId/wallet-pass', { preHandler: [], handler: serviceUpsertWalletPassHandler as any });
 }

@@ -55,10 +55,23 @@ model UserMembership {
 
   role                           UserRole          @default(USER)
   user                           User              @relation(fields: [userId], references: [id])
+  walletPass                     WalletPass?
   // A user can have at most one membership per business
   @@unique([userId, businessId], map: "userId_businessId")
   // Enforce: a user can subscribe to at most one business per brand
   @@unique([userId, brandId])
+}
+
+model WalletPass {
+  id                String          @id @default(cuid())
+  userMembershipId  String          @unique
+  objectId          String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  membership        UserMembership  @relation(fields: [userMembershipId], references: [id])
+
+  @@index([userMembershipId])
 }
 
 model Unsubscribe {
