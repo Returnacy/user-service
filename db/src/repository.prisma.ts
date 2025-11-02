@@ -198,6 +198,16 @@ export class RepositoryPrisma {
     });
   }
 
+  // Count new users by membership creation date since a given timestamp
+  async countNewUsersSince(businessId: string, since: Date): Promise<number> {
+    return prisma.userMembership.count({
+      where: {
+        businessId,
+        createdAt: { gte: since },
+      }
+    });
+  }
+
   async findUserById(userId: string): Promise<User | null> {
     return prisma.user.findUnique({ where: { id: userId } });
   }
