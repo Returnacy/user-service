@@ -114,7 +114,8 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset as number)) : (page - 1) * limit;
   const maxTakeEnv = Number((process.env.INTERNAL_USERS_QUERY_MAX ?? '').trim() || '0');
   const maxTake = Number.isFinite(maxTakeEnv) && maxTakeEnv > 0 ? Math.max(limit, Math.trunc(maxTakeEnv)) : DEFAULT_MAX_TAKE;
-  const desiredTake = Math.max(offset + limit, limit * 10);
+  // When a free-text search is present, widen the candidate window to improve matching coverage
+  const desiredTake = Math.max(offset + limit, (typeof body.search === 'string' && body.search.trim().length > 0) ? (limit * 50) : (limit * 10));
   const take = Math.min(desiredTake, maxTake);
 
   const targetingRules = Array.isArray(body.targetingRules) ? body.targetingRules : [];
