@@ -174,6 +174,17 @@ export class RepositoryPrisma {
     });
   }
 
+  // Count users that have a membership for a given business
+  async countUsersByBusiness(businessId: string): Promise<number> {
+    return prisma.user.count({
+      where: {
+        userMemberships: {
+          some: { businessId }
+        }
+      }
+    });
+  }
+
   // Targeting with pre-filter by membership brandId
   async findUsersForTargetingByBrand(brandId: string, limit: number): Promise<User[]> {
     return prisma.user.findMany({
