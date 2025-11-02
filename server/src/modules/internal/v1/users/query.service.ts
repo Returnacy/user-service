@@ -18,6 +18,7 @@ type QueryBody = {
   limit?: number;
   page?: number;
   offset?: number;
+  search?: string | null;
   sortBy?: SortField;
   sortOrder?: SortDirection;
   filters?: QueryFilters;
@@ -117,6 +118,8 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const take = Math.min(desiredTake, maxTake);
 
   const targetingRules = Array.isArray(body.targetingRules) ? body.targetingRules : [];
+  const searchRaw = typeof body.search === 'string' ? body.search.trim() : '';
+  const search = searchRaw.length > 0 ? searchRaw : '';
   const sortBy = body.sortBy ?? 'name';
   const sortOrder: SortDirection = body.sortOrder === 'desc' ? 'desc' : 'asc';
   const filters = body.filters ?? {};
@@ -194,7 +197,26 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   }));
 
   const filteredByRules = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
-  const filtered = filteredByRules.filter((row: any) => {
+
+  // Apply free-text search across name, surname, email, and phone (OR semantics)
+  const filteredBySearch = search
+    ? filteredByRules.filter((u: any) => {
+        const fullName = `${u.name ?? ''} ${u.surname ?? ''}`.trim().toLowerCase();
+        const email = (u.email ?? '').toLowerCase();
+        const phone = String(u.phone ?? '');
+        const phoneDigits = phone.replace(/\D+/g, '');
+        const s = search.toLowerCase();
+        const sDigits = search.replace(/\D+/g, '');
+        return (
+          (fullName && fullName.includes(s)) ||
+          (email && email.includes(s)) ||
+          (phone && phone.toLowerCase().includes(s)) ||
+          (sDigits && phoneDigits && phoneDigits.includes(sDigits))
+        );
+      })
+    : filteredByRules;
+
+  const filtered = filteredBySearch.filter((row: any) => {
     if (minStamps !== null && (row.validStamps ?? 0) < minStamps) return false;
     if (couponsOnly && (row.validCoupons ?? 0) <= 0) return false;
     if (lastVisitDays !== null) {
@@ -237,7 +259,9 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     }
   });
 
-  const trimmed = sorted.slice(0, take);
+  // If a search is present, widen the candidate window slightly to improve page stability under filtering
+  const effectiveTake = search ? Math.min(Math.max(take, limit * 20), Math.max(take, limit * 20)) : take;
+  const trimmed = sorted.slice(0, effectiveTake);
   const paged = trimmed.slice(offset, offset + limit);
 
   const users = paged.map((u: any) => ({
