@@ -1,37 +1,63 @@
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
 import { fileURLToPath } from 'url';
+import { TokenService } from '../classes/tokenService.js';
 
 export type DomainMapping = Record<string, { brandId: string | null; businessId: string }>;
 
 let cache: DomainMapping | null = null;
 
 export function loadDomainMapping(): DomainMapping {
+  // Deprecated local loader: retained for dev fallback only
   if (cache) return cache;
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  // Try multiple fallback locations to survive different build layouts
-  const candidates: string[] = [];
-  if (process.env.DOMAIN_MAPPING_FILE) candidates.push(process.env.DOMAIN_MAPPING_FILE);
-  // dist/src/utils -> dist/domain-mapping.json
-  candidates.push(path.resolve(__dirname, '../domain-mapping.json'));
-  // dist/src/utils -> server root copy
-  candidates.push(path.resolve(__dirname, '../../domain-mapping.json'));
-  // common absolute path inside container image
-  candidates.push('/app/server/domain-mapping.json');
-  const filePath = candidates.find(p => {
-    try { return fs.existsSync(p); } catch { return false; }
-  });
-  if (!filePath) return {} as DomainMapping;
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  cache = JSON.parse(raw);
-  return cache!;
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const candidates: string[] = [];
+    if (process.env.DOMAIN_MAPPING_FILE) candidates.push(process.env.DOMAIN_MAPPING_FILE);
+    candidates.push(path.resolve(__dirname, '../domain-mapping.json'));
+    candidates.push(path.resolve(__dirname, '../../domain-mapping.json'));
+    candidates.push('/app/server/domain-mapping.json');
+    const filePath = candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+    if (!filePath) return {} as DomainMapping;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    cache = JSON.parse(raw);
+    return cache!;
+  } catch {
+    return {} as any;
+  }
+}
+
+async function getServiceHeaders(): Promise<Record<string, string>> {
+  const tokenUrl = process.env.KEYCLOAK_TOKEN_URL
+    || ((process.env.KEYCLOAK_BASE_URL && process.env.KEYCLOAK_REALM)
+      ? `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`
+      : '');
+  const clientId = process.env.KEYCLOAK_CLIENT_ID || '';
+  const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || '';
+  if (!tokenUrl || !clientId || !clientSecret) return {};
+  try {
+    const ts = new TokenService({ tokenUrl, clientId, clientSecret });
+    const token = await ts.getAccessToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
 }
 
 export function resolveDomain(host?: string): { brandId: string | null; businessId: string } | null {
   if (!host) return null;
-  const map = loadDomainMapping();
+  const serviceUrl = process.env.DOMAIN_MAPPER_URL;
   const hostname: string = (host as string).toLowerCase().split(':')[0] ?? '';
+  if (serviceUrl) {
+    // Fire-and-forget sync fallback: this is a sync fn; best effort cached approach
+    // Caller should prefer the async HTTP helper when possible.
+    // Here we fallback to local cache until we refactor callers to async.
+    // eslint-disable-next-line no-console
+    return cache?.[hostname] ?? null;
+  }
+  const map = loadDomainMapping();
   return map[hostname] ?? null;
 }
 
@@ -98,7 +124,42 @@ export function resolveBusinessServiceUrl(options: { businessId?: string | null;
     if (url) return url;
   }
 
-  // Fallback to explicit configuration if mapping is missing or does not contain the business
+  // Prefer domain-mapper-service if available
+  const mapper = process.env.DOMAIN_MAPPER_URL;
+  if (mapper && options.businessId) {
+    // Note: this is sync; we will do a naive cached attempt first
+    // then caller can use dedicated async client for strict behavior.
+  }
   const fallback = process.env.BUSINESS_SERVICE_URL;
   return fallback ? fallback.replace(/\/+$/u, '') : null;
+}
+
+// Async helpers preferred by call sites that can await
+export async function fetchBusinessServiceUrl(businessId: string, scheme?: string): Promise<string | null> {
+  const mapper = process.env.DOMAIN_MAPPER_URL;
+  if (!mapper) return resolveBusinessServiceUrl({ businessId, scheme: scheme ?? null });
+  try {
+    const headers = await getServiceHeaders();
+    const res = await axios.get(`${mapper.replace(/\/$/, '')}/api/v1/business/${encodeURIComponent(businessId)}` , { headers });
+    const url = res.data?.url || res.data?.host;
+    if (typeof url === 'string' && url) return url;
+  } catch {
+    // ignore, fallback below
+  }
+  return resolveBusinessServiceUrl({ businessId, scheme: scheme ?? null });
+}
+
+export async function fetchDomainInfoByHost(host: string): Promise<{ brandId: string | null; businessId: string } | null> {
+  const mapper = process.env.DOMAIN_MAPPER_URL;
+  if (!mapper) return resolveDomain(host);
+  try {
+    const headers = await getServiceHeaders();
+    const res = await axios.get(`${mapper.replace(/\/$/, '')}/api/v1/resolve`, { params: { host }, headers });
+    const brandId = res.data?.brandId ?? null;
+    const businessId = res.data?.businessId;
+    if (businessId) return { brandId, businessId };
+  } catch {
+    // ignore
+  }
+  return resolveDomain(host);
 }
