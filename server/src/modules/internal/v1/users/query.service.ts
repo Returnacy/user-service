@@ -6,12 +6,18 @@ import { loadDomainMapping } from '@/utils/domainMapping.js';
 type Rule = { database: 'USER' | string; field: string; operator: string; value: any };
 
 type QueryBody = {
-  targetingRules: Rule[];
-  limit: number;
+  targetingRules?: Rule[];
+  limit?: number;
+  page?: number;
+  offset?: number;
   businessId?: string | null;
   brandId?: string | null;
   prize?: { id: string } | null;
 };
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+const DEFAULT_MAX_TAKE = 1000;
 
 function todayPartsUTC() {
   const d = new Date();
@@ -23,7 +29,7 @@ function todayPartsUTC() {
 function resolveDynamicValue(field: string, operator: string, value: any): any {
   if (typeof value !== 'string') return value;
   const raw = value.trim();
-    const unwrap = (s: string) => s.replace(/^\$\{/, '').replace(/^\{\{/, '').replace(/\}\}$/, '').replace(/\}$/, '');
+  const unwrap = (s: string) => s.replace(/^\$\{/, '').replace(/^\{\{/, '').replace(/\}\}$/, '').replace(/\}$/, '');
   const token = unwrap(raw);
   if (token === 'TODAY_MM_DD') {
     const { mm, dd } = todayPartsUTC();
@@ -87,14 +93,28 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     return { statusCode: 403, body: { error: 'FORBIDDEN' } };
   }
 
-  const { targetingRules, limit, businessId, brandId, prize } = (request.body ?? {}) as QueryBody;
+  const body = (request.body ?? {}) as QueryBody;
+  const rawLimit = body.limit;
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(Math.trunc(rawLimit as number), MAX_LIMIT)) : DEFAULT_LIMIT;
+  const rawPage = body.page;
+  const page = Number.isFinite(rawPage) ? Math.max(1, Math.trunc(rawPage as number)) : 1;
+  const rawOffset = body.offset;
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset as number)) : (page - 1) * limit;
+  const maxTakeEnv = Number((process.env.INTERNAL_USERS_QUERY_MAX ?? '').trim() || '0');
+  const maxTake = Number.isFinite(maxTakeEnv) && maxTakeEnv > 0 ? Math.max(limit, Math.trunc(maxTakeEnv)) : DEFAULT_MAX_TAKE;
+  const take = Math.min(offset + limit, maxTake);
+
+  const targetingRules = Array.isArray(body.targetingRules) ? body.targetingRules : [];
+  const businessId = body.businessId ?? null;
+  const brandId = body.brandId ?? null;
+  const prize = body.prize ?? null;
+
   const repository = (request.server as any).repository as any;
 
-  const rules = (targetingRules || []).filter((r) => r.database === 'USER');
+  const rules = targetingRules.filter((r) => r.database === 'USER');
   const processedRules = rules.map((r) => ({ ...r, value: resolveDynamicValue(r.field, r.operator, r.value) }));
 
   let candidates: any[];
-  const take = limit ?? 1000;
   if (businessId) {
     candidates = await (repository.findUsersForTargetingByBusiness?.(businessId, take) ?? repository.findUsersForTargeting(take));
   } else if (brandId) {
@@ -109,12 +129,12 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     if (businessId || brandId) {
       try {
         const mships = await repository.listMemberships(u.id);
-        let m = null as any;
-        if (businessId) m = mships.find((ms: any) => ms.businessId === businessId);
-        if (!m && brandId) m = mships.find((ms: any) => ms.brandId === brandId);
-        if (m) {
-          stamps = typeof m.stamps === 'number' ? m.stamps : (m.stamps ?? null);
-          tokens = typeof m.tokens === 'number' ? m.tokens : (m.tokens ?? null);
+        let membership = null as any;
+        if (businessId) membership = mships.find((ms: any) => ms.businessId === businessId);
+        if (!membership && brandId) membership = mships.find((ms: any) => ms.brandId === brandId);
+        if (membership) {
+          stamps = typeof membership.stamps === 'number' ? membership.stamps : (membership.stamps ?? null);
+          tokens = typeof membership.tokens === 'number' ? membership.tokens : (membership.tokens ?? null);
         }
       } catch {
         // ignore membership enrichment errors per user
@@ -124,9 +144,10 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   }));
 
   const filtered = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
-  const sliced = filtered.slice(0, limit ?? 100);
+  const trimmed = filtered.slice(0, take);
+  const pagedSlice = trimmed.slice(offset, offset + limit);
 
-  const users = sliced.map((u: any) => ({
+  const users = pagedSlice.map((u: any) => ({
     id: u.id,
     email: u.email ?? null,
     phone: u.phone ?? null,
@@ -145,10 +166,10 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     if (!targetBusinessId && brandId) {
       try {
         const map = loadDomainMapping();
-        for (const v of Object.values(map)) {
-          const entry = v as any;
-          if (entry && entry.brandId === brandId && entry.businessId) {
-            targetBusinessId = entry.businessId;
+        for (const entry of Object.values(map)) {
+          const value = entry as any;
+          if (value && value.brandId === brandId && value.businessId) {
+            targetBusinessId = value.businessId;
             break;
           }
         }
@@ -163,13 +184,13 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
       const workers: Promise<void>[] = [];
       const runWorker = async () => {
         while (queue.length > 0) {
-          const u = queue.shift()!;
+          const current = queue.shift()!;
           try {
-            const m = await repository.getMembership(u.id, targetBusinessId!);
-            const nextValid = (m?.validCoupons ?? 0) + 1;
-            await repository.setMembershipCounters(u.id, targetBusinessId!, { validCoupons: nextValid, totalCouponsDelta: 1 });
-          } catch (e) {
-            request.log.warn({ err: e }, 'Failed to increment coupon counter for user');
+            const membership = await repository.getMembership(current.id, targetBusinessId!);
+            const nextValid = (membership?.validCoupons ?? 0) + 1;
+            await repository.setMembershipCounters(current.id, targetBusinessId!, { validCoupons: nextValid, totalCouponsDelta: 1 });
+          } catch (error) {
+            request.log.warn({ err: error }, 'Failed to increment coupon counter for user');
           }
         }
       };
