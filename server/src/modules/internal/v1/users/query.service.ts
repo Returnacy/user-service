@@ -151,6 +151,7 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
 
   const enriched = await Promise.all(candidates.map(async (u: any) => {
     let validStamps: number | null = null;
+    let totalStamps: number | null = null;
     let tokens: number | null = null;
     let validCoupons: number | null = null;
     let lastVisitedAt: Date | null = null;
@@ -161,11 +162,17 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
         if (businessId) membership = mships.find((ms: any) => ms.businessId === businessId);
         if (!membership && brandId) membership = mships.find((ms: any) => ms.brandId === brandId);
         if (membership) {
-          const stampValue = (membership.validStamps ?? membership.stamps) as number | null;
+          const stampValue = membership.validStamps as number | null;
           if (typeof stampValue === 'number' && Number.isFinite(stampValue)) {
             validStamps = stampValue;
           } else if (stampValue !== null && stampValue !== undefined) {
             validStamps = Number(stampValue) || 0;
+          }
+          const totalStampValue = membership.totalStamps as number | null;
+          if (typeof totalStampValue === 'number' && Number.isFinite(totalStampValue)) {
+            totalStamps = totalStampValue;
+          } else if (totalStampValue !== null && totalStampValue !== undefined) {
+            totalStamps = Number(totalStampValue) || validStamps ?? 0;
           }
           tokens = typeof membership.tokens === 'number' ? membership.tokens : (membership.tokens ?? null);
           const couponValue = membership.validCoupons as number | null;
@@ -182,7 +189,7 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
         // ignore membership enrichment errors per user
       }
     }
-    return { ...u, validStamps, tokens, validCoupons, lastVisitedAt };
+    return { ...u, validStamps, totalStamps, tokens, validCoupons, lastVisitedAt };
   }));
 
   const filteredByRules = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
@@ -242,6 +249,12 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
       birthday: u.birthday ?? null,
       stamps: u.validStamps ?? null,
       tokens: u.tokens ?? null,
+    },
+    stats: {
+      validStamps: u.validStamps ?? 0,
+      totalStamps: u.totalStamps ?? (u.validStamps ?? 0),
+      validCoupons: u.validCoupons ?? 0,
+      lastVisit: u.lastVisitedAt ? new Date(u.lastVisitedAt).toISOString() : null,
     },
   }));
 
