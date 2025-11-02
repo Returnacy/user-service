@@ -145,9 +145,8 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
 
   const filtered = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
   const trimmed = filtered.slice(0, take);
-  const pagedSlice = trimmed.slice(offset, offset + limit);
 
-  const users = pagedSlice.map((u: any) => ({
+  const users = trimmed.map((u: any) => ({
     id: u.id,
     email: u.email ?? null,
     phone: u.phone ?? null,
