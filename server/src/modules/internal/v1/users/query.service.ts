@@ -5,11 +5,22 @@ import { loadDomainMapping } from '@/utils/domainMapping.js';
 
 type Rule = { database: 'USER' | string; field: string; operator: string; value: any };
 
+type SortField = 'name' | 'stamp' | 'coupon' | 'lastVisit';
+type SortDirection = 'asc' | 'desc';
+type QueryFilters = {
+  minStamps?: number;
+  couponsOnly?: boolean;
+  lastVisitDays?: number | null;
+};
+
 type QueryBody = {
   targetingRules?: Rule[];
   limit?: number;
   page?: number;
   offset?: number;
+  sortBy?: SortField;
+  sortOrder?: SortDirection;
+  filters?: QueryFilters;
   businessId?: string | null;
   brandId?: string | null;
   prize?: { id: string } | null;
@@ -102,9 +113,24 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset as number)) : (page - 1) * limit;
   const maxTakeEnv = Number((process.env.INTERNAL_USERS_QUERY_MAX ?? '').trim() || '0');
   const maxTake = Number.isFinite(maxTakeEnv) && maxTakeEnv > 0 ? Math.max(limit, Math.trunc(maxTakeEnv)) : DEFAULT_MAX_TAKE;
-  const take = Math.min(offset + limit, maxTake);
+  const desiredTake = Math.max(offset + limit, limit * 10);
+  const take = Math.min(desiredTake, maxTake);
 
   const targetingRules = Array.isArray(body.targetingRules) ? body.targetingRules : [];
+  const sortBy = body.sortBy ?? 'name';
+  const sortOrder: SortDirection = body.sortOrder === 'desc' ? 'desc' : 'asc';
+  const filters = body.filters ?? {};
+  let minStamps = Number.isFinite(filters.minStamps) ? Math.max(0, Math.trunc(filters.minStamps as number)) : null;
+  const legacyMinStamp = Number.isFinite((body as any).minStamp)
+    ? Math.max(0, Math.trunc((body as any).minStamp as number))
+    : null;
+  if (minStamps === null && legacyMinStamp !== null) {
+    minStamps = legacyMinStamp;
+  }
+  const couponsOnly = filters.couponsOnly === true;
+  const lastVisitDays = Number.isFinite(filters.lastVisitDays)
+    ? Math.max(1, Math.trunc(filters.lastVisitDays as number))
+    : null;
   const businessId = body.businessId ?? null;
   const brandId = body.brandId ?? null;
   const prize = body.prize ?? null;
@@ -124,8 +150,10 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   }
 
   const enriched = await Promise.all(candidates.map(async (u: any) => {
-    let stamps: number | null = null;
+    let validStamps: number | null = null;
     let tokens: number | null = null;
+    let validCoupons: number | null = null;
+    let lastVisitedAt: Date | null = null;
     if (businessId || brandId) {
       try {
         const mships = await repository.listMemberships(u.id);
@@ -133,20 +161,77 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
         if (businessId) membership = mships.find((ms: any) => ms.businessId === businessId);
         if (!membership && brandId) membership = mships.find((ms: any) => ms.brandId === brandId);
         if (membership) {
-          stamps = typeof membership.stamps === 'number' ? membership.stamps : (membership.stamps ?? null);
+          const stampValue = (membership.validStamps ?? membership.stamps) as number | null;
+          if (typeof stampValue === 'number' && Number.isFinite(stampValue)) {
+            validStamps = stampValue;
+          } else if (stampValue !== null && stampValue !== undefined) {
+            validStamps = Number(stampValue) || 0;
+          }
           tokens = typeof membership.tokens === 'number' ? membership.tokens : (membership.tokens ?? null);
+          const couponValue = membership.validCoupons as number | null;
+          if (typeof couponValue === 'number' && Number.isFinite(couponValue)) {
+            validCoupons = couponValue;
+          } else if (couponValue !== null && couponValue !== undefined) {
+            validCoupons = Number(couponValue) || 0;
+          }
+          if (membership.lastVisitedAt) {
+            lastVisitedAt = new Date(membership.lastVisitedAt);
+          }
         }
       } catch {
         // ignore membership enrichment errors per user
       }
     }
-    return { ...u, stamps, tokens };
+    return { ...u, validStamps, tokens, validCoupons, lastVisitedAt };
   }));
 
-  const filtered = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
-  const trimmed = filtered.slice(0, take);
+  const filteredByRules = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
+  const filtered = filteredByRules.filter((row: any) => {
+    if (minStamps !== null && (row.validStamps ?? 0) < minStamps) return false;
+    if (couponsOnly && (row.validCoupons ?? 0) <= 0) return false;
+    if (lastVisitDays !== null) {
+      const cutoff = Date.now() - (lastVisitDays * 24 * 60 * 60 * 1000);
+      const last = row.lastVisitedAt instanceof Date
+        ? row.lastVisitedAt.getTime()
+        : row.lastVisitedAt
+          ? new Date(row.lastVisitedAt).getTime()
+          : 0;
+      if (last < cutoff) return false;
+    }
+    return true;
+  });
 
-  const users = trimmed.map((u: any) => ({
+  const multiplier = sortOrder === 'desc' ? -1 : 1;
+  const sorted = [...filtered].sort((a: any, b: any) => {
+    switch (sortBy) {
+      case 'stamp': {
+        const av = Number(a.validStamps ?? 0);
+        const bv = Number(b.validStamps ?? 0);
+        return (av - bv) * multiplier;
+      }
+      case 'coupon': {
+        const av = Number(a.validCoupons ?? 0);
+        const bv = Number(b.validCoupons ?? 0);
+        return (av - bv) * multiplier;
+      }
+      case 'lastVisit': {
+        const av = a.lastVisitedAt ? new Date(a.lastVisitedAt).getTime() : 0;
+        const bv = b.lastVisitedAt ? new Date(b.lastVisitedAt).getTime() : 0;
+        return (av - bv) * multiplier;
+      }
+      case 'name':
+      default: {
+        const an = `${a.name ?? ''} ${a.surname ?? ''}`.trim().toLowerCase();
+        const bn = `${b.name ?? ''} ${b.surname ?? ''}`.trim().toLowerCase();
+        return an.localeCompare(bn) * multiplier;
+      }
+    }
+  });
+
+  const trimmed = sorted.slice(0, take);
+  const paged = trimmed.slice(offset, offset + limit);
+
+  const users = paged.map((u: any) => ({
     id: u.id,
     email: u.email ?? null,
     phone: u.phone ?? null,
@@ -155,7 +240,7 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     attributes: {
       ...(u.preferences ?? {}),
       birthday: u.birthday ?? null,
-      stamps: u.stamps ?? null,
+      stamps: u.validStamps ?? null,
       tokens: u.tokens ?? null,
     },
   }));
