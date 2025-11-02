@@ -172,7 +172,8 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
           if (typeof totalStampValue === 'number' && Number.isFinite(totalStampValue)) {
             totalStamps = totalStampValue;
           } else if (totalStampValue !== null && totalStampValue !== undefined) {
-            totalStamps = Number(totalStampValue) || validStamps ?? 0;
+            const parsedTotal = Number(totalStampValue);
+            totalStamps = Number.isFinite(parsedTotal) ? parsedTotal : (validStamps ?? 0);
           }
           tokens = typeof membership.tokens === 'number' ? membership.tokens : (membership.tokens ?? null);
           const couponValue = membership.validCoupons as number | null;
