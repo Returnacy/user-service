@@ -213,8 +213,9 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const sorted = [...filtered].sort((a: any, b: any) => {
     switch (sortBy) {
       case 'stamp': {
-        const av = Number(a.validStamps ?? 0);
-        const bv = Number(b.validStamps ?? 0);
+        // Order by TOTAL stamps (valid + used) when available; fallback to validStamps
+        const av = Number(a.totalStamps ?? a.validStamps ?? 0);
+        const bv = Number(b.totalStamps ?? b.validStamps ?? 0);
         return (av - bv) * multiplier;
       }
       case 'coupon': {
