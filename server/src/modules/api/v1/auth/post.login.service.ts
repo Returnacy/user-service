@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
+import { resolveDomain } from '@/utils/domainMapping.js';
 
 const legacyLoginSchema = z.object({
   username: z.string().email(),
@@ -54,19 +55,115 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         return { statusCode: 400, body: { error: 'UNSUPPORTED_OAUTH_PROVIDER' } };
       }
 
-      const repository = (request.server as any).repository;
+  const repository = (request.server as any).repository;
       const tokenService = (request.server as any).keycloakTokenService as TokenService;
       const googlePayload = await verifyGoogleIdToken(oauthInput.idToken);
       const googleSub = googlePayload.sub;
       const emailFromGoogle = (googlePayload.email || '').toLowerCase();
       const email = emailFromGoogle || (typeof rawBody.email === 'string' ? rawBody.email.toLowerCase() : '');
 
+  // Resolve brand/business context from request headers (like in registration)
+  const xfh = request.headers['x-forwarded-host'] as string | undefined;
+  const host = request.headers['host'] as string | undefined;
+  const origin = request.headers['origin'] as string | undefined;
+  const referer = request.headers['referer'] as string | undefined;
+  let originHost = '';
+  try { if (origin) originHost = new URL(origin).host; } catch {}
+  let refererHost = '';
+  try { if (referer) refererHost = new URL(referer).host; } catch {}
+  const fromHost = host ? resolveDomain(host) : null;
+  const fromXfh = xfh ? resolveDomain(xfh) : null;
+  const fromOrigin = originHost ? resolveDomain(originHost) : null;
+  const fromReferer = refererHost ? resolveDomain(refererHost) : null;
+  const domain = fromHost || fromXfh || fromOrigin || fromReferer;
+
       let user = googleSub ? await repository.findUserByGoogleSub(googleSub) : null;
       if (!user && email) {
-        user = await repository.findUserByEmail(email);
-        if (user && googleSub && !(user as any).googleSub) {
-          await repository.upsertUserByKeycloakSub(user.keycloakSub, { googleSub });
-          user = await repository.findUserByKeycloakSub(user.keycloakSub);
+        if (domain?.businessId || domain?.brandId) {
+          // Prefer scoped lookup to avoid cross-brand account linking/overwrite
+          let scoped: any = null;
+          if (domain.businessId) {
+            scoped = await repository.findUserByEmailAndBusiness(email, domain.businessId);
+          }
+          if (!scoped && domain.brandId) {
+            scoped = await repository.findUserByEmailAndBrand(email, domain.brandId);
+          }
+          if (scoped) {
+            user = scoped;
+            if (googleSub && !(user as any).googleSub) {
+              await repository.upsertUserByKeycloakSub(user.keycloakSub, { googleSub });
+              user = await repository.findUserByKeycloakSub(user.keycloakSub);
+            }
+          } else {
+            // If an account with same email exists for another brand, add membership for current brand/business and sync Keycloak memberships
+            const existingAny = await repository.findUserByEmail(email);
+            if (existingAny && (domain.brandId || domain.businessId)) {
+              // 1) Link googleSub to existing user if needed
+              if (googleSub && !(existingAny as any).googleSub) {
+                await repository.upsertUserByKeycloakSub(existingAny.keycloakSub, { googleSub });
+              }
+
+              // 2) Upsert membership in our DB for current domain
+              try {
+                await repository.upsertMembership(existingAny.id, {
+                  businessId: domain.businessId,
+                  brandId: domain.brandId ?? null,
+                  role: 'USER'
+                });
+              } catch (mErr) {
+                request.log.warn({ mErr }, 'Failed to upsert membership for existing user');
+              }
+
+              // 3) Update Keycloak memberships attribute to include new brand/business
+              try {
+                const adminAccessToken = await tokenService.getAccessToken();
+                const baseUrl = process.env.KEYCLOAK_BASE_URL!;
+                const realm = process.env.KEYCLOAK_REALM!;
+
+                const kcGet = await axios.get(
+                  `${baseUrl}/admin/realms/${realm}/users/${existingAny.keycloakSub}`,
+                  { headers: { Authorization: `Bearer ${adminAccessToken}` } }
+                );
+                const kcUser = kcGet.data as any;
+                const attrs = (kcUser?.attributes ?? {}) as Record<string, string[]>;
+                const rawMemberships: string = (Array.isArray(attrs.memberships) && attrs.memberships.length > 0 && typeof attrs.memberships[0] === 'string') ? attrs.memberships[0] as unknown as string : '[]';
+                let parsed: any[] = [];
+                try {
+                  const val = JSON.parse(rawMemberships);
+                  if (Array.isArray(val)) parsed = val; else if (val && typeof val === 'object') parsed = [val];
+                } catch (_) {
+                  parsed = [];
+                }
+
+                const exists = parsed.some((m: any) => (m?.businessId === domain.businessId) || (domain.brandId && m?.brandId === domain.brandId));
+                if (!exists) {
+                  parsed.push({ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] });
+                  const nextAttrs = {
+                    ...attrs,
+                    memberships: [JSON.stringify(parsed)]
+                  } as Record<string, string[]>;
+                  await axios.put(
+                    `${baseUrl}/admin/realms/${realm}/users/${existingAny.keycloakSub}`,
+                    { attributes: nextAttrs },
+                    { headers: { Authorization: `Bearer ${adminAccessToken}` } }
+                  );
+                }
+              } catch (kcErr) {
+                request.log.warn({ kcErr }, 'Failed to update Keycloak memberships attribute');
+              }
+
+              // Treat as authenticated user from here
+              user = await repository.findUserByKeycloakSub(existingAny.keycloakSub);
+            }
+            // Else, fall through: user remains null -> handled below (404 register-first)
+          }
+        } else {
+          // No domain context; fallback to legacy behavior
+          user = await repository.findUserByEmail(email);
+          if (user && googleSub && !(user as any).googleSub) {
+            await repository.upsertUserByKeycloakSub(user.keycloakSub, { googleSub });
+            user = await repository.findUserByKeycloakSub(user.keycloakSub);
+          }
         }
       }
 

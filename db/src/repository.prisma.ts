@@ -28,6 +28,28 @@ export class RepositoryPrisma {
   return prisma.user.findUnique({ where: { googleSub } as any });
   }
 
+  async findUserByEmailAndBrand(email: string, brandId: string): Promise<User | null> {
+    return prisma.user.findFirst({
+      where: {
+        email,
+        userMemberships: {
+          some: { brandId }
+        }
+      }
+    });
+  }
+
+  async findUserByEmailAndBusiness(email: string, businessId: string): Promise<User | null> {
+    return prisma.user.findFirst({
+      where: {
+        email,
+        userMemberships: {
+          some: { businessId }
+        }
+      }
+    });
+  }
+
   async createUser(data: Omit<Prisma.UserCreateInput, 'userMemberships'> & { userMemberships?: Prisma.UserMembershipCreateNestedManyWithoutUserInput }): Promise<User> {
   return prisma.user.create({ data: data as any });
   }
