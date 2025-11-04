@@ -36,6 +36,8 @@ model User {
   termsOfServiceAcceptances      TermsOfServiceAcceptance[]
   marketingTermsAcceptances      MarketingTermsAcceptance[]
   unsubscribes                   Unsubscribe?
+  emailVerificationTokens        EmailVerificationToken[]
+  passwordResetTokens            PasswordResetToken[]
 
   @@index([keycloakSub])
 }
@@ -152,4 +154,30 @@ model MarketingTermsAcceptance {
   user                       User                @relation(fields: [userId], references: [id])
 
   @@unique([userId, version])
+}
+
+model EmailVerificationToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token      String   @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token      String   @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }

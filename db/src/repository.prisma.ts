@@ -234,6 +234,40 @@ export class RepositoryPrisma {
     return prisma.user.findUnique({ where: { id: userId } });
   }
 
+  // Tokens: Email verification
+  async createEmailVerificationToken(userId: string, ttlMinutes = 1440) {
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    const token = (await import('node:crypto')).randomBytes(32).toString('base64url');
+    return (prisma as any).emailVerificationToken.create({
+      data: { userId, token, expiresAt }
+    });
+  }
+
+  async consumeEmailVerificationToken(token: string) {
+    const now = new Date();
+    const row = await (prisma as any).emailVerificationToken.findUnique({ where: { token } });
+    if (!row || row.usedAt || new Date(row.expiresAt) < now) return null;
+    await (prisma as any).emailVerificationToken.update({ where: { token }, data: { usedAt: now } });
+    return row;
+  }
+
+  // Tokens: Password reset
+  async createPasswordResetToken(userId: string, ttlMinutes = 60) {
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    const token = (await import('node:crypto')).randomBytes(32).toString('base64url');
+    return (prisma as any).passwordResetToken.create({
+      data: { userId, token, expiresAt }
+    });
+  }
+
+  async consumePasswordResetToken(token: string) {
+    const now = new Date();
+    const row = await (prisma as any).passwordResetToken.findUnique({ where: { token } });
+    if (!row || row.usedAt || new Date(row.expiresAt) < now) return null;
+    await (prisma as any).passwordResetToken.update({ where: { token }, data: { usedAt: now } });
+    return row;
+  }
+
   // Policies latest versions
   async getLatestPrivacyPolicyVersion(): Promise<string | null> {
     const p = await prisma.privacyPolicy.findFirst({ orderBy: { createdAt: 'desc' } });
