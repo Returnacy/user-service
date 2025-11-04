@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { z } from 'zod';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
+import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { registerSchema } from '@user-service/types';
@@ -166,7 +167,8 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
         username: registerData.email,
         email: registerData.email,
         enabled: true,
-        emailVerified: true,
+        // Force email verification at sign-up; user must confirm via emailed link
+        emailVerified: false,
         firstName: registerData.name,
         lastName: registerData.surname,
         attributes
@@ -196,9 +198,10 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     }
 
     try {
+      // Keep required actions cleared, but do NOT auto-verify email
       await axios.put(
         `${baseUrl}/admin/realms/${realm}/users/${keycloakId}`,
-        { requiredActions: [], emailVerified: true },
+        { requiredActions: [], emailVerified: false },
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
     } catch (err) {
@@ -244,6 +247,53 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     if (registerData.acceptPrivacyPolicy && latestPP) await repository.createPrivacyPolicyAcceptance(dbUser.id, latestPP, ip, ua);
     if (registerData.acceptTermsOfService && latestTOS) await repository.createTermsOfServiceAcceptance(dbUser.id, latestTOS, ip, ua);
     if (registerData.acceptMarketing && latestMT) await repository.createMarketingTermsAcceptance(dbUser.id, latestMT, ip, ua);
+
+    // Send verification email with branded HTML design
+    try {
+      const ttlMinutes = Number.parseInt(process.env.EMAIL_VERIFY_TTL_MINUTES || '1440', 10);
+      const tokenRow = await repository.createEmailVerificationToken(dbUser.id, Number.isFinite(ttlMinutes) ? ttlMinutes : 1440);
+      const verifyBase = process.env.FRONTEND_VERIFY_EMAIL_URL || process.env.FRONTEND_BASE_URL || '';
+      const verificationLink = verifyBase ? `${verifyBase}?token=${encodeURIComponent(tokenRow.token)}` : `token:${tokenRow.token}`;
+
+      const businessName = (process.env.BUSINESS_NAME || (domain?.brandId ? String(domain.brandId) : '') || 'la tua attività');
+      const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';
+      const userName = `${registerData.name}${registerData.surname ? ' ' + registerData.surname : ''}`.trim() || 'Cliente';
+
+      const subject = `Verifica il tuo indirizzo email - ${businessName}`;
+      const bodyHtml = await renderEmailTemplate('verifyEmail.html', {
+        user_name: userName,
+        business_name: businessName,
+        business_emoji: businessEmoji,
+        verification_link: verificationLink,
+      });
+      const bodyText = `Ciao ${userName},\n\nPer verificare la tua email visita: ${verificationLink}\n\nSe non hai richiesto questa registrazione, ignora questa email.\n\n${businessName}`;
+
+      const messagingUrl = process.env.MESSAGING_SERVICE_URL;
+      if (!messagingUrl) {
+        request.log.warn('MESSAGING_SERVICE_URL not configured; skipping verification email send');
+      } else {
+        const svcToken = await tokenService.getAccessToken();
+        const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
+        const idempotencyKey = `verify:register:${dbUser.id}:${tokenRow.id}`;
+        await axios.post(`${messagingUrl}/api/v1/messages`, {
+          campaignId: null,
+          recipientId: dbUser.id,
+          idempotencyKey,
+          channel: 'EMAIL',
+          scheduledAt: null,
+          payload: {
+            subject,
+            bodyHtml,
+            bodyText,
+            from,
+            to: { email: dbUser.email, name: userName || 'Utente' }
+          },
+          maxAttempts: 1
+        }, { headers: { Authorization: `Bearer ${svcToken}`, 'Content-Type': 'application/json' } });
+      }
+    } catch (sendErr) {
+      request.log.error({ err: sendErr }, 'Failed to send verification email after registration');
+    }
 
     try {
       const tokenRes = await issuePasswordGrant(registerData.email, loginPassword);

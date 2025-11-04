@@ -1,8 +1,8 @@
 import type { FastifyRequest } from 'fastify';
 import axios from 'axios';
-import crypto from 'node:crypto';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
+import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 
 type VerifyEmailBody = {
   redirectUri?: string;
@@ -39,8 +39,16 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
     const accessToken = await tokenService.getAccessToken();
     const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
 
-    const subject = 'Verifica la tua email';
-    const bodyHtml = `<p>Ciao ${user.name || ''},</p><p>Per verificare la tua email clicca il seguente link:</p><p><a href="${url}">Verifica email</a></p><p>Se non hai richiesto tu questa azione, ignora questa email.</p>`;
+    const businessName = process.env.BUSINESS_NAME || 'la tua attività';
+    const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';
+    const userName = `${user.name || ''} ${user.surname || ''}`.trim() || 'Cliente';
+    const subject = `Verifica il tuo indirizzo email - ${businessName}`;
+    const bodyHtml = await renderEmailTemplate('verifyEmail.html', {
+      user_name: userName,
+      business_name: businessName,
+      business_emoji: businessEmoji,
+      verification_link: url,
+    });
     const idempotencyKey = `verify:${user.id}:${tokenRow.id}`;
     await axios.post(`${messagingUrl}/api/v1/messages`, {
       campaignId: null,
@@ -51,7 +59,7 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
       payload: {
         subject,
         bodyHtml,
-        bodyText: 'Verifica la tua email',
+        bodyText: `Per verificare la tua email visita: ${url}`,
         from,
         to: { email: user.email, name: `${user.name || ''} ${user.surname || ''}`.trim() || 'Utente' }
       },

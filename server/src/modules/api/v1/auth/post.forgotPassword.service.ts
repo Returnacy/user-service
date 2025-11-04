@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify';
 import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
+import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 
 type ForgotPasswordBody = {
   email: string;
@@ -35,8 +36,17 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
     const accessToken = await tokenService.getAccessToken();
     const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
-    const subject = 'Reimposta la tua password';
-    const bodyHtml = `<p>Ciao ${user.name || ''},</p><p>Per reimpostare la password clicca il seguente link:</p><p><a href="${url}">Reimposta password</a></p><p>Questo link scade in ${ttlMinutes} minuti.</p>`;
+    const businessName = process.env.BUSINESS_NAME || 'la tua attività';
+    const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';
+    const userName = `${user.name || ''} ${user.surname || ''}`.trim() || 'Cliente';
+    const subject = `Reimposta la tua password - ${businessName}`;
+    const bodyHtml = await renderEmailTemplate('passwordReset.html', {
+      user_name: userName,
+      business_name: businessName,
+      business_emoji: businessEmoji,
+      reset_link: url,
+      ttl_minutes: ttlMinutes,
+    });
     const idempotencyKey = `reset:${user.id}:${tokenRow.id}`;
     await axios.post(`${messagingUrl}/api/v1/messages`, {
       campaignId: null,
@@ -47,7 +57,7 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
       payload: {
         subject,
         bodyHtml,
-        bodyText: 'Reimposta la tua password',
+        bodyText: `Per reimpostare la password visita: ${url}`,
         from,
         to: { email: user.email, name: `${user.name || ''} ${user.surname || ''}`.trim() || 'Utente' }
       },
