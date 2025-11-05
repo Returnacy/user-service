@@ -38,6 +38,14 @@ function todayPartsUTC() {
   return { mm, dd };
 }
 
+function partsDaysBeforeUTC(days: number) {
+  const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const yyyy = String(d.getUTCFullYear());
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return { yyyy, mm, dd };
+}
+
 function resolveDynamicValue(field: string, operator: string, value: any): any {
   if (typeof value !== 'string') return value;
   const raw = value.trim();
@@ -50,6 +58,22 @@ function resolveDynamicValue(field: string, operator: string, value: any): any {
   if (token === 'TODAY_SUFFIX_MM_DD') {
     const { mm, dd } = todayPartsUTC();
     return `-${mm}-${dd}`;
+  }
+  if (token === '7_DAYS_BEFORE_SUFFIX_MM_DD') {
+    const { mm, dd } = partsDaysBeforeUTC(7);
+    return `-${mm}-${dd}`;
+  }
+  if (token === '30_DAYS_BEFORE_SUFFIX_MM_DD') {
+    const { mm, dd } = partsDaysBeforeUTC(30);
+    return `-${mm}-${dd}`;
+  }
+  if (token === '30_DAYS_BEFORE') {
+    const { yyyy, mm, dd } = partsDaysBeforeUTC(30);
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  if (token === '40_DAYS_BEFORE') {
+    const { yyyy, mm, dd } = partsDaysBeforeUTC(40);
+    return `${yyyy}-${mm}-${dd}`;
   }
   return value;
 }
