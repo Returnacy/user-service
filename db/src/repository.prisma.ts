@@ -88,14 +88,19 @@ export class RepositoryPrisma {
   }
 
   // Memberships
-  async addMembership(userId: string, membership: { businessId: string; brandId?: string | null; role?: UserRole }): Promise<UserMembership> {
+  async addMembership(userId: string, membership: { businessId?: string | null; brandId?: string | null; role?: UserRole }): Promise<UserMembership> {
+    const businessId = membership.businessId ?? null;
+    const brandId = membership.brandId ?? null;
+    if (!businessId && !brandId) {
+      throw Object.assign(new Error('BUSINESS_OR_BRAND_REQUIRED'), { code: 'BUSINESS_OR_BRAND_REQUIRED' });
+    }
     return prisma.userMembership.create({
       data: {
         userId,
-        businessId: membership.businessId,
-        brandId: membership.brandId ?? null,
+        businessId: businessId as any,
+        brandId,
         role: membership.role ?? 'USER',
-      }
+      } as any
     });
   }
 
@@ -103,19 +108,51 @@ export class RepositoryPrisma {
     return prisma.userMembership.findMany({ where: { userId } });
   }
 
-  async upsertMembership(userId: string, membership: { businessId: string; brandId?: string | null; role?: UserRole }): Promise<UserMembership> {
-    const existing = await prisma.userMembership.findUnique({ where: { userId_businessId: { userId, businessId: membership.businessId } } as any });
-    if (existing) {
-      return prisma.userMembership.update({
-        where: { id: existing.id },
-        data: { brandId: membership.brandId ?? null, role: membership.role ?? existing.role }
-      });
+  async upsertMembership(userId: string, membership: { businessId?: string | null; brandId?: string | null; role?: UserRole }): Promise<UserMembership> {
+    const businessId = membership.businessId ?? null;
+    const brandId = membership.brandId ?? null;
+    const nextRole = membership.role;
+
+    if (businessId) {
+      const existing = await prisma.userMembership.findUnique({ where: { userId_businessId: { userId, businessId } } as any });
+      if (existing) {
+        return prisma.userMembership.update({
+          where: { id: existing.id },
+          data: {
+            brandId,
+            role: nextRole ?? existing.role,
+          }
+        });
+      }
+      const payload: { businessId?: string | null; brandId?: string | null; role?: UserRole } = { businessId, brandId };
+      if (nextRole) payload.role = nextRole;
+      return this.addMembership(userId, payload);
     }
-    return this.addMembership(userId, membership);
+
+    if (brandId) {
+      const existing = await prisma.userMembership.findFirst({ where: { userId, brandId } });
+      if (existing) {
+        return prisma.userMembership.update({
+          where: { id: existing.id },
+          data: {
+            role: nextRole ?? existing.role,
+          }
+        });
+      }
+      const payload: { businessId?: string | null; brandId?: string | null; role?: UserRole } = { businessId: null, brandId };
+      if (nextRole) payload.role = nextRole;
+      return this.addMembership(userId, payload);
+    }
+
+    throw Object.assign(new Error('BUSINESS_OR_BRAND_REQUIRED'), { code: 'BUSINESS_OR_BRAND_REQUIRED' });
   }
 
   async getMembership(userId: string, businessId: string): Promise<UserMembership | null> {
     return prisma.userMembership.findUnique({ where: { userId_businessId: { userId, businessId } } as any });
+  }
+
+  async getMembershipByBrand(userId: string, brandId: string): Promise<UserMembership | null> {
+    return prisma.userMembership.findFirst({ where: { userId, brandId } });
   }
 
   async getMembershipWithWalletPass(userId: string, businessId: string): Promise<(UserMembership & { walletPass: WalletPassRecord | null }) | null> {
@@ -207,6 +244,16 @@ export class RepositoryPrisma {
     });
   }
 
+  async countUsersByBrand(brandId: string): Promise<number> {
+    return prisma.user.count({
+      where: {
+        userMemberships: {
+          some: { brandId }
+        }
+      }
+    });
+  }
+
   // Targeting with pre-filter by membership brandId
   async findUsersForTargetingByBrand(brandId: string, limit: number): Promise<User[]> {
     return prisma.user.findMany({
@@ -225,6 +272,15 @@ export class RepositoryPrisma {
     return prisma.userMembership.count({
       where: {
         businessId,
+        createdAt: { gte: since },
+      }
+    });
+  }
+
+  async countNewUsersSinceBrand(brandId: string, since: Date): Promise<number> {
+    return prisma.userMembership.count({
+      where: {
+        brandId,
         createdAt: { gte: since },
       }
     });

@@ -3,7 +3,7 @@ import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 
-type MembershipInput = { brandId: string | null; businessId: string; roles: string[] };
+type MembershipInput = { brandId: string | null; businessId: string | null; roles: string[] };
 
 type PatchMembershipsResponse = { ok: true } | { error: string };
 
@@ -25,7 +25,7 @@ export async function patchMembershipsService(
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
 
     for (const m of membershipsInput) {
-      await repository.upsertMembership(userId, { businessId: m.businessId, brandId: m.brandId, role: 'USER' });
+      await repository.upsertMembership(userId, { businessId: m.businessId ?? null, brandId: m.brandId, role: 'USER' });
     }
 
     const attribute = [JSON.stringify(membershipsInput)];

@@ -4,7 +4,7 @@ import axios from 'axios';
 import { fileURLToPath } from 'url';
 import { TokenService } from '../classes/tokenService.js';
 
-export type DomainMapping = Record<string, { brandId: string | null; businessId: string }>;
+export type DomainMapping = Record<string, { brandId: string | null; businessId: string | null }>;
 
 let cache: DomainMapping | null = null;
 
@@ -46,7 +46,7 @@ async function getServiceHeaders(): Promise<Record<string, string>> {
   }
 }
 
-export function resolveDomain(host?: string): { brandId: string | null; businessId: string } | null {
+export function resolveDomain(host?: string): { brandId: string | null; businessId: string | null } | null {
   if (!host) return null;
   const serviceUrl = process.env.DOMAIN_MAPPER_URL;
   const hostname: string = (host as string).toLowerCase().split(':')[0] ?? '';
@@ -149,15 +149,15 @@ export async function fetchBusinessServiceUrl(businessId: string, scheme?: strin
   return resolveBusinessServiceUrl({ businessId, scheme: scheme ?? null });
 }
 
-export async function fetchDomainInfoByHost(host: string): Promise<{ brandId: string | null; businessId: string } | null> {
+export async function fetchDomainInfoByHost(host: string): Promise<{ brandId: string | null; businessId: string | null } | null> {
   const mapper = process.env.DOMAIN_MAPPER_URL;
   if (!mapper) return resolveDomain(host);
   try {
     const headers = await getServiceHeaders();
-    const res = await axios.get(`${mapper.replace(/\/$/, '')}/api/v1/resolve`, { params: { host }, headers });
-    const brandId = res.data?.brandId ?? null;
-    const businessId = res.data?.businessId;
-    if (businessId) return { brandId, businessId };
+  const res = await axios.get(`${mapper.replace(/\/$/, '')}/api/v1/resolve`, { params: { host }, headers });
+  const brandId = res.data?.brandId ?? null;
+  const businessId = res.data?.businessId ?? null;
+  if (brandId || businessId) return { brandId, businessId };
   } catch {
     // ignore
   }

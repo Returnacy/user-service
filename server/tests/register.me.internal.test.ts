@@ -37,8 +37,39 @@ function createMemoryRepo() {
       }
       return u;
     },
-    async addMembership(userId: string, m: any) { const arr = memberships.get(userId) || []; const rec = { id: `m_${Math.random().toString(36).slice(2)}`, userId, businessId: m.businessId, brandId: m.brandId ?? null, role: m.role ?? 'USER' }; arr.push(rec); memberships.set(userId, arr); return rec; },
-    async upsertMembership(userId: string, m: any) { const arr = memberships.get(userId) || []; const idx = arr.findIndex(x => x.businessId === m.businessId); if (idx >= 0) { arr[idx] = { ...arr[idx], brandId: m.brandId ?? arr[idx].brandId, role: m.role ?? arr[idx].role }; memberships.set(userId, arr); return arr[idx]; } return this.addMembership(userId, m); },
+    async addMembership(userId: string, m: any) {
+      const arr = memberships.get(userId) || [];
+      const rec = {
+        id: `m_${Math.random().toString(36).slice(2)}`,
+        userId,
+        businessId: m.businessId ?? null,
+        brandId: m.brandId ?? null,
+        role: m.role ?? 'USER'
+      };
+      arr.push(rec);
+      memberships.set(userId, arr);
+      return rec;
+    },
+    async upsertMembership(userId: string, m: any) {
+      const arr = memberships.get(userId) || [];
+      let idx = typeof m.businessId === 'string' && m.businessId.length
+        ? arr.findIndex(x => x.businessId === m.businessId)
+        : -1;
+      if (idx < 0 && m.brandId) {
+        idx = arr.findIndex(x => x.brandId === m.brandId && (x.businessId ?? null) === (m.businessId ?? null));
+      }
+      if (idx >= 0) {
+        arr[idx] = {
+          ...arr[idx],
+          businessId: m.businessId ?? arr[idx].businessId ?? null,
+          brandId: m.brandId ?? arr[idx].brandId ?? null,
+          role: m.role ?? arr[idx].role ?? 'USER'
+        };
+        memberships.set(userId, arr);
+        return arr[idx];
+      }
+      return this.addMembership(userId, m);
+    },
     async listMemberships(userId: string) { return memberships.get(userId) || []; },
     async findUsersForTargeting(limit: number) { return Array.from(users.values()).slice(0, limit); },
     async findUserById(userId: string) { return users.get(userId) || null; },
@@ -96,18 +127,19 @@ describe('user-service core endpoints', () => {
 
   it('GET /api/v1/me auto-enrolls membership for domain when missing', async () => {
     // Provide a fake auth user via headers
-  const sub = 'test-sub-1';
-  (axios.put as any).mockResolvedValueOnce({ status: 204 });
+    const sub = 'test-sub-1';
+    const host = 'fidelity.business.chepizzadasalva.it';
+    (axios.put as any).mockResolvedValue({ status: 204 });
 
     // First call: create local user via upsert
-    let res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host: 'localhost', 'x-test-sub': sub } });
+  let res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
     expect(res.statusCode).toBe(200);
     const first = res.json();
     expect(first.id).toBeDefined();
     expect(Array.isArray(first.memberships)).toBe(true);
 
     // Second call should still work and not duplicate membership
-    res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host: 'localhost', 'x-test-sub': sub } });
+  res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
     expect(res.statusCode).toBe(200);
     const second = res.json();
     expect(second.memberships.length).toBeGreaterThanOrEqual(1);
@@ -127,5 +159,16 @@ describe('user-service core endpoints', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(Array.isArray(body.users)).toBe(true);
+  });
+
+  it('GET /api/v1/me handles brand-only domains without crashing', async () => {
+    const sub = 'brand-only-sub';
+    const host = 'pizzalonga.returnacy.app';
+    (axios.put as any).mockResolvedValue({ status: 204 });
+
+    const res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(Array.isArray(body.memberships)).toBe(true);
   });
 });

@@ -46,7 +46,7 @@ model UserMembership {
   id                             String            @id @default(cuid())
   userId                         String
   brandId                        String?
-  businessId                     String
+  businessId                     String?
   createdAt                      DateTime          @default(now())
   updatedAt                      DateTime          @updatedAt
   endedAt                        DateTime?

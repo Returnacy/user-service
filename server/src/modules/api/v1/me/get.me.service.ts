@@ -43,24 +43,38 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
     let memberships = await repository.listMemberships(user.id);
 
     if (domain) {
-      const hasMembership = memberships.some((m: any) => m.businessId === domain.businessId);
-      if (!hasMembership) {
-        await repository.addMembership(user.id, { businessId: domain.businessId, brandId: domain.brandId, role: 'USER' });
+      const targetBusinessId = domain.businessId ?? null;
+      const targetBrandId = domain.brandId ?? null;
+      const hasMembership = targetBusinessId
+        ? memberships.some((m: any) => m.businessId === targetBusinessId)
+        : targetBrandId
+          ? memberships.some((m: any) => (m.brandId ?? null) === targetBrandId)
+          : false;
+      if (!hasMembership && (targetBusinessId || targetBrandId)) {
+        await repository.upsertMembership(user.id, { businessId: targetBusinessId, brandId: targetBrandId, role: 'USER' });
         memberships = await repository.listMemberships(user.id);
 
-        if (!tokenMembershipClaims.some((m) => (m?.businessId ?? '') === domain.businessId)) {
-          tokenMembershipClaims = [...tokenMembershipClaims, { brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }];
+        const alreadyScoped = tokenMembershipClaims.some((m) => (
+          targetBusinessId
+            ? (m?.businessId ?? '') === targetBusinessId
+            : targetBrandId
+              ? (m?.brandId ?? '') === targetBrandId
+              : false
+        ));
+        if (!alreadyScoped) {
+          tokenMembershipClaims = [...tokenMembershipClaims, { brandId: targetBrandId ?? null, businessId: targetBusinessId, roles: ['user'] }];
         }
 
         const attributeMemberships: Membership[] = tokenMembershipClaims
           .map((m) => {
-            const business = m?.businessId ? String(m.businessId) : '';
-            if (!business) return null;
+            const business = m?.businessId ? String(m.businessId) : null;
+            const brand = m?.brandId ?? null;
+            if (!business && !brand) return null;
             const rolesSource = Array.isArray(m?.roles) && m.roles.length
               ? m.roles
               : (m?.role ? [String(m.role)] : ['user']);
             return {
-              brandId: m?.brandId ?? null,
+              brandId: brand,
               businessId: business,
               roles: rolesSource.map((r) => String(r).toLowerCase()),
             } as Membership;
@@ -81,11 +95,15 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
       }
 
       try {
-        const match = tokenMembershipClaims.find((m) => (m?.businessId ?? '') === domain.businessId);
+        const match = targetBusinessId
+          ? tokenMembershipClaims.find((m) => (m?.businessId ?? '') === targetBusinessId)
+          : targetBrandId
+            ? tokenMembershipClaims.find((m) => (m?.brandId ?? '') === targetBrandId)
+            : null;
         if (match) {
           const effective = deriveRoleFromMembership(match);
           const asDbRole = String(effective || 'user').toUpperCase();
-          await repository.upsertMembership(user.id, { businessId: domain.businessId, brandId: domain.brandId, role: asDbRole });
+          await repository.upsertMembership(user.id, { businessId: targetBusinessId, brandId: targetBrandId, role: asDbRole });
           memberships = await repository.listMemberships(user.id);
         }
       } catch {
@@ -114,7 +132,9 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
 
     const inScopeMembership = businessId
       ? localMemberships.find((m: any) => m.businessId === businessId)
-      : null;
+      : domain?.brandId
+        ? localMemberships.find((m: any) => (m.brandId ?? null) === domain.brandId)
+        : null;
 
     const validStamps = (() => {
       const s = (inScopeMembership as any)?.validStamps ?? (inScopeMembership as any)?.stamps;
