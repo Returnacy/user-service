@@ -139,10 +139,12 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     try { if (origin) originHost = new URL(origin).host; } catch {}
     let refererHost = '';
     try { if (referer) refererHost = new URL(referer).host; } catch {}
-    const resolvedFromHost = host ? resolveDomain(host) : null;
-    const resolvedFromXfh = xfh ? resolveDomain(xfh) : null;
-    const resolvedFromOrigin = originHost ? resolveDomain(originHost) : null;
-    const resolvedFromReferer = refererHost ? resolveDomain(refererHost) : null;
+    const [resolvedFromHost, resolvedFromXfh, resolvedFromOrigin, resolvedFromReferer] = await Promise.all([
+      host ? resolveDomain(host) : Promise.resolve(null),
+      xfh ? resolveDomain(xfh) : Promise.resolve(null),
+      originHost ? resolveDomain(originHost) : Promise.resolve(null),
+      refererHost ? resolveDomain(refererHost) : Promise.resolve(null),
+    ]);
     const domain = resolvedFromHost || resolvedFromXfh || resolvedFromOrigin || resolvedFromReferer;
 
     dbg({ xfh, host, origin, referer, originHost, refererHost, resolvedFromHost, resolvedFromXfh, resolvedFromOrigin, resolvedFromReferer }, 'Resolved domain candidates');

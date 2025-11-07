@@ -54,7 +54,7 @@ export async function postGoogleWalletService(request: FastifyRequest): Promise<
   }
 
   const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
-  const domain = resolveDomain(host);
+  const domain = await resolveDomain(host);
 
   let businessId: string | null = payload.businessId ?? domain?.businessId ?? null;
 

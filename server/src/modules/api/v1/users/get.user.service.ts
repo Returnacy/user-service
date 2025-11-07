@@ -29,8 +29,8 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
 
     const memberships = await repository.listMemberships(user.id);
 
-    const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
-    const domain = resolveDomain(host);
+  const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
+  const domain = await resolveDomain(host);
     const forwardedProto = (request.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
     const tokenMembershipClaims = parseTokenMemberships((auth as any).memberships);
 
@@ -48,7 +48,7 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
     }
 
     const businessServiceBase = businessId
-      ? resolveBusinessServiceUrl({ businessId, host, scheme: forwardedProto || request.protocol })
+      ? await resolveBusinessServiceUrl({ businessId, host, scheme: forwardedProto || request.protocol, resolvedDomain: domain })
       : null;
 
     const inScopeMembership = businessId

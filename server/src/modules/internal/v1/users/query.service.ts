@@ -1,7 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
-import { loadDomainMapping } from '@/utils/domainMapping.js';
+import { fetchDomainBusinesses } from '@/utils/domainMapping.js';
 
 type Rule = { database: 'USER' | string; field: string; operator: string; value: any };
 
@@ -313,13 +313,10 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     let targetBusinessId: string | null = businessId || null;
     if (!targetBusinessId && brandId) {
       try {
-        const map = loadDomainMapping();
-        for (const entry of Object.values(map)) {
-          const value = entry as any;
-          if (value && value.brandId === brandId && value.businessId) {
-            targetBusinessId = value.businessId;
-            break;
-          }
+        const businesses = await fetchDomainBusinesses();
+        const match = businesses.find((entry) => entry.brandId === brandId && entry.businessId);
+        if (match?.businessId) {
+          targetBusinessId = match.businessId;
         }
       } catch {
         // ignore mapping resolution errors

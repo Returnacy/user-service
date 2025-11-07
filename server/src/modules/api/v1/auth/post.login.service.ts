@@ -71,10 +71,12 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
   try { if (origin) originHost = new URL(origin).host; } catch {}
   let refererHost = '';
   try { if (referer) refererHost = new URL(referer).host; } catch {}
-  const fromHost = host ? resolveDomain(host) : null;
-  const fromXfh = xfh ? resolveDomain(xfh) : null;
-  const fromOrigin = originHost ? resolveDomain(originHost) : null;
-  const fromReferer = refererHost ? resolveDomain(refererHost) : null;
+  const [fromHost, fromXfh, fromOrigin, fromReferer] = await Promise.all([
+    host ? resolveDomain(host) : Promise.resolve(null),
+    xfh ? resolveDomain(xfh) : Promise.resolve(null),
+    originHost ? resolveDomain(originHost) : Promise.resolve(null),
+    refererHost ? resolveDomain(refererHost) : Promise.resolve(null),
+  ]);
   const domain = fromHost || fromXfh || fromOrigin || fromReferer;
 
       let user = googleSub ? await repository.findUserByGoogleSub(googleSub) : null;

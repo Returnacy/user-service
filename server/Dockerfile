@@ -33,10 +33,6 @@ RUN mkdir -p ./dist/node_modules/@user-service/db/dist \
 	&& cp -r ../db/dist/* ./dist/node_modules/@user-service/db/dist/ \
 	&& printf '{"name":"@user-service/db","type":"module","main":"dist/src/index.js"}' > ./dist/node_modules/@user-service/db/package.json
 
-# Also copy domain mapping into locations our loader will probe
-RUN cp domain-mapping.json ./dist/domain-mapping.json || true \
-	&& cp domain-mapping.json ./dist/src/domain-mapping.json || true
-
 ENV NODE_ENV=production
 EXPOSE 3000
 CMD ["node", "dist/src/app.js"]

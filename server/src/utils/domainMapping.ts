@@ -1,32 +1,51 @@
-import fs from 'fs';
-import path from 'path';
-import axios from 'axios';
-import { fileURLToPath } from 'url';
+import axios, { type AxiosRequestConfig } from 'axios';
 import { TokenService } from '../classes/tokenService.js';
+export type DomainResolution = {
+  brandId: string | null;
+  businessId: string | null;
+  host: string | null;
+  service: string | null;
+  label: string | null;
+  url: string | null;
+};
 
-export type DomainMapping = Record<string, { brandId: string | null; businessId: string | null }>;
+export type DomainMapperBusinessEntry = {
+  label: string | null;
+  brandId: string | null;
+  businessId: string | null;
+  services: Record<string, string>;
+};
 
-let cache: DomainMapping | null = null;
+const DEFAULT_CACHE_MS = Number(process.env.DOMAIN_MAPPER_CACHE_MS || 60_000);
 
-export function loadDomainMapping(): DomainMapping {
-  // Deprecated local loader: retained for dev fallback only
-  if (cache) return cache;
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    const candidates: string[] = [];
-    if (process.env.DOMAIN_MAPPING_FILE) candidates.push(process.env.DOMAIN_MAPPING_FILE);
-    candidates.push(path.resolve(__dirname, '../domain-mapping.json'));
-    candidates.push(path.resolve(__dirname, '../../domain-mapping.json'));
-    candidates.push('/app/server/domain-mapping.json');
-    const filePath = candidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
-    if (!filePath) return {} as DomainMapping;
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    cache = JSON.parse(raw);
-    return cache!;
-  } catch {
-    return {} as any;
-  }
+const hostCache = new Map<string, { expiresAt: number; value: DomainResolution | null }>();
+const businessUrlCache = new Map<string, { expiresAt: number; value: string | null }>();
+let businessesCache: { expiresAt: number; value: DomainMapperBusinessEntry[] } | null = null;
+
+function normalizeHostKey(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const withoutScheme = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const segment = withoutScheme.split('/')[0] ?? withoutScheme;
+  return segment.trim().toLowerCase();
+}
+
+function normalizeScheme(scheme?: string | null): string {
+  const fallback = process.env.BUSINESS_SERVICE_URL_SCHEME || 'https';
+  if (!scheme) return fallback;
+  const trimmed = scheme.trim().toLowerCase();
+  if (!trimmed) return fallback;
+  const isValid = /^[a-z][a-z0-9+.-]*$/.test(trimmed);
+  return isValid ? trimmed : fallback;
+}
+
+function deriveUrlFromHost(hostOrUrl: string, scheme?: string | null): string {
+  const trimmed = hostOrUrl.trim();
+  if (!trimmed) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/u, '');
+  const normalizedScheme = normalizeScheme(scheme);
+  const sanitized = trimmed.replace(/^\/+/, '').replace(/\/+$/u, '');
+  return `${normalizedScheme}://${sanitized}`;
 }
 
 async function getServiceHeaders(): Promise<Record<string, string>> {
@@ -46,120 +65,109 @@ async function getServiceHeaders(): Promise<Record<string, string>> {
   }
 }
 
-export function resolveDomain(host?: string): { brandId: string | null; businessId: string | null } | null {
-  if (!host) return null;
-  const serviceUrl = process.env.DOMAIN_MAPPER_URL;
-  const hostname: string = (host as string).toLowerCase().split(':')[0] ?? '';
-  if (serviceUrl) {
-    // Fire-and-forget sync fallback: this is a sync fn; best effort cached approach
-    // Caller should prefer the async HTTP helper when possible.
-    // Here we fallback to local cache until we refactor callers to async.
-    // eslint-disable-next-line no-console
-    return cache?.[hostname] ?? null;
-  }
-  const map = loadDomainMapping();
-  return map[hostname] ?? null;
+function ensureMapperUrl(): string {
+  const url = process.env.DOMAIN_MAPPER_URL;
+  if (!url) throw new Error('DOMAIN_MAPPER_URL is not configured');
+  return url.replace(/\/+$/, '');
+}
+async function mapperGet<T = any>(path: string, config: AxiosRequestConfig = {}): Promise<T> {
+  const base = ensureMapperUrl();
+  const headers = await getServiceHeaders();
+  const mergedHeaders = { ...(config.headers ?? {}), ...headers };
+  const response = await axios.get<T>(`${base}${path}`, { ...config, headers: mergedHeaders });
+  return response.data;
 }
 
-function scoreHostPreference(value: string): number {
-  const lower = value.toLowerCase();
-  let score = 0;
-  if (lower.includes('business')) score += 5;
-  if (lower.includes('api')) score += 3;
-  if (lower.includes('service')) score += 2;
-  if (lower.includes('backend')) score += 1;
-  if (lower.includes('localhost')) score -= 1;
-  return score;
-}
-
-function normalizeScheme(scheme?: string | null): string {
-  const fallback = process.env.BUSINESS_SERVICE_URL_SCHEME || 'https';
-  if (!scheme) return fallback;
-  const trimmed = scheme.trim().toLowerCase();
-  if (!trimmed) return fallback;
-  const isValid = /^[a-z][a-z0-9+\-.]*$/.test(trimmed);
-  return isValid ? trimmed : fallback;
-}
-
-function toCandidateUrl(raw: string, scheme: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return '';
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed.replace(/\/+$/u, '');
-  }
-  const sanitized = trimmed.replace(/^\/+/, '').replace(/\/+$/u, '');
-  return `${scheme}://${sanitized}`;
-}
-
-export function resolveBusinessServiceUrl(options: { businessId?: string | null; host?: string | null; scheme?: string | null } = {}): string | null {
-  const map = loadDomainMapping();
-  const scheme = normalizeScheme(options.scheme);
-
-  const hostCandidates: string[] = [];
-
-  if (options.host) {
-    const rawHost = String(options.host).split(',')[0]?.trim() ?? '';
-    if (rawHost) {
-      const hostnameOnly = rawHost.toLowerCase().split(':')[0] ?? rawHost.toLowerCase();
-      if (hostnameOnly && map[hostnameOnly]) hostCandidates.push(hostnameOnly);
-    }
-  }
-
-  if (options.businessId) {
-    for (const [domain, info] of Object.entries(map)) {
-      if (info?.businessId === options.businessId && !hostCandidates.includes(domain)) {
-        hostCandidates.push(domain);
+export async function fetchDomainInfoByHost(host: string): Promise<DomainResolution | null> {
+  const normalized = normalizeHostKey(host);
+  if (!normalized) return null;
+  const cached = hostCache.get(normalized);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const data = await mapperGet<any>(`/api/v1/resolve`, { params: { host } });
+  const result: DomainResolution | null = data && typeof data === 'object'
+    ? {
+        brandId: data.brandId ?? null,
+        businessId: data.businessId ?? null,
+        host: data.host ?? normalized,
+        service: data.service ?? null,
+        label: data.label ?? null,
+        url: data.url ?? null,
       }
-    }
-  }
-
-  const ranked = hostCandidates
-    .map((candidate) => candidate.trim())
-    .filter(Boolean)
-    .map((candidate) => ({ candidate, score: scoreHostPreference(candidate) }))
-    .sort((a, b) => b.score - a.score);
-
-  for (const { candidate } of ranked) {
-    const url = toCandidateUrl(candidate, scheme);
-    if (url) return url;
-  }
-
-  // Prefer domain-mapper-service if available
-  const mapper = process.env.DOMAIN_MAPPER_URL;
-  if (mapper && options.businessId) {
-    // Note: this is sync; we will do a naive cached attempt first
-    // then caller can use dedicated async client for strict behavior.
-  }
-  const fallback = process.env.BUSINESS_SERVICE_URL;
-  return fallback ? fallback.replace(/\/+$/u, '') : null;
+    : null;
+  hostCache.set(normalized, { expiresAt: Date.now() + DEFAULT_CACHE_MS, value: result });
+  return result;
 }
 
-// Async helpers preferred by call sites that can await
-export async function fetchBusinessServiceUrl(businessId: string, scheme?: string): Promise<string | null> {
-  const mapper = process.env.DOMAIN_MAPPER_URL;
-  if (!mapper) return resolveBusinessServiceUrl({ businessId, scheme: scheme ?? null });
+export async function resolveDomain(host?: string | null): Promise<DomainResolution | null> {
+  if (!host) return null;
+  const normalized = host.trim();
+  if (!normalized) return null;
   try {
-    const headers = await getServiceHeaders();
-    const res = await axios.get(`${mapper.replace(/\/$/, '')}/api/v1/business/${encodeURIComponent(businessId)}` , { headers });
-    const url = res.data?.url || res.data?.host;
-    if (typeof url === 'string' && url) return url;
+    return await fetchDomainInfoByHost(normalized);
   } catch {
-    // ignore, fallback below
+    return null;
   }
-  return resolveBusinessServiceUrl({ businessId, scheme: scheme ?? null });
 }
 
-export async function fetchDomainInfoByHost(host: string): Promise<{ brandId: string | null; businessId: string | null } | null> {
-  const mapper = process.env.DOMAIN_MAPPER_URL;
-  if (!mapper) return resolveDomain(host);
-  try {
-    const headers = await getServiceHeaders();
-  const res = await axios.get(`${mapper.replace(/\/$/, '')}/api/v1/resolve`, { params: { host }, headers });
-  const brandId = res.data?.brandId ?? null;
-  const businessId = res.data?.businessId ?? null;
-  if (brandId || businessId) return { brandId, businessId };
-  } catch {
-    // ignore
+export async function fetchDomainBusinesses(forceRefresh = false): Promise<DomainMapperBusinessEntry[]> {
+  const now = Date.now();
+  if (!forceRefresh && businessesCache && businessesCache.expiresAt > now) {
+    return businessesCache.value;
   }
-  return resolveDomain(host);
+  try {
+    const data = await mapperGet<any[]>(`/api/v1/businesses`);
+    const entries: DomainMapperBusinessEntry[] = Array.isArray(data)
+      ? data.map((item: any) => ({
+          label: item?.label ?? null,
+          brandId: item?.brandId ?? null,
+          businessId: item?.businessId ?? null,
+          services: typeof item?.services === 'object' && item?.services !== null ? item.services : {},
+        }))
+      : [];
+    businessesCache = { expiresAt: now + DEFAULT_CACHE_MS, value: entries };
+    return entries;
+  } catch (err) {
+    return businessesCache?.value ?? [];
+  }
+}
+
+export async function fetchBusinessServiceUrl(businessId: string, scheme?: string | null): Promise<string | null> {
+  if (!businessId) return null;
+  const cached = businessUrlCache.get(businessId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  try {
+    const data = await mapperGet<any>(`/api/v1/business/${encodeURIComponent(businessId)}`);
+    const raw = typeof data?.url === 'string' && data.url
+      ? data.url
+      : (typeof data?.host === 'string' ? data.host : null);
+    const resolved = raw ? deriveUrlFromHost(raw, scheme) : null;
+    businessUrlCache.set(businessId, { expiresAt: Date.now() + DEFAULT_CACHE_MS, value: resolved });
+    return resolved;
+  } catch (err) {
+    businessUrlCache.set(businessId, { expiresAt: Date.now() + DEFAULT_CACHE_MS, value: null });
+    return cached?.value ?? null;
+  }
+}
+
+export async function resolveBusinessServiceUrl(options: {
+  businessId?: string | null;
+  host?: string | null;
+  scheme?: string | null;
+  resolvedDomain?: DomainResolution | null;
+} = {}): Promise<string | null> {
+  const scheme = normalizeScheme(options.scheme);
+  const resolvedDomain = options.resolvedDomain ?? (options.host ? await resolveDomain(options.host) : null);
+  if (resolvedDomain?.businessId && options.businessId && resolvedDomain.businessId !== options.businessId) {
+    // prefer explicit businessId if mismatch
+  } else if (resolvedDomain?.url || resolvedDomain?.host) {
+    return deriveUrlFromHost(resolvedDomain.url || resolvedDomain.host || '', scheme) || null;
+  }
+
+  const targetBusinessId = options.businessId ?? resolvedDomain?.businessId ?? null;
+  if (!targetBusinessId) return null;
+  try {
+    return await fetchBusinessServiceUrl(targetBusinessId, scheme);
+  } catch {
+    return null;
+  }
 }

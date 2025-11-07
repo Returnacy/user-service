@@ -2,7 +2,7 @@ import type { FastifyRequest } from 'fastify';
 import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
-import { resolveBusinessServiceUrl, resolveDomain } from '@/utils/domainMapping.js';
+import { resolveBusinessServiceUrl, resolveDomain, fetchBusinessServiceUrl } from '@/utils/domainMapping.js';
 import { buildMembershipAttribute, parseTokenMemberships } from '@/utils/memberships.js';
 import type { Membership } from '@/utils/memberships.js';
 
@@ -35,9 +35,12 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
     }
     const user = await repository.findUserByKeycloakSub(sub);
 
-    const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
-    const domain = resolveDomain(host);
+    const forwardedHost = (request.headers['x-forwarded-host'] as string)?.split(',')[0]?.trim();
+    const rawHost = forwardedHost || (request.headers['host'] as string);
+    const host = rawHost ? rawHost.split(':')[0] : undefined;
+  const domain = await resolveDomain(host);
     const forwardedProto = (request.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
+    const inferredScheme = forwardedProto || request.protocol;
 
     let tokenMembershipClaims = parseTokenMemberships((auth as any).memberships);
     let memberships = await repository.listMemberships(user.id);
@@ -127,7 +130,7 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
     }
 
     const businessServiceBase = businessId
-      ? resolveBusinessServiceUrl({ businessId, host, scheme: forwardedProto || request.protocol })
+      ? await resolveBusinessServiceUrl({ businessId, host: host ?? null, scheme: inferredScheme, resolvedDomain: domain })
       : null;
 
     const inScopeMembership = businessId
@@ -169,8 +172,14 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
       stampsLastPrize: number;
     } | null = null;
 
-    if (businessId && businessServiceBase) {
-      const base = businessServiceBase.replace(/\/$/, '');
+    if (businessId) {
+      const normalizeBase = (value?: string | null) => {
+        if (!value) return null;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        return trimmed.replace(/\/+$/u, '');
+      };
+
       const headers: Record<string, string> = {};
       try {
         const svcToken = await tokenService.getAccessToken();
@@ -179,42 +188,59 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
         // continue without auth header
       }
 
-      try {
-        const res = await axios.get(`${base}/api/v1/coupons`, {
-          params: { userId: user.id, businessId },
-          headers,
-        });
-        const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
-        const coupons = Array.isArray(payload) ? payload : [];
-        const now = Date.now();
-        couponsList = coupons.filter((c: any) => !c?.isRedeemed && (!c?.expiredAt || new Date(c.expiredAt).getTime() > now));
-        if (couponsList.length > validCoupons) {
-          validCoupons = couponsList.length;
+      let resolvedBusinessBase = normalizeBase(businessServiceBase)
+        || normalizeBase(process.env.BUSINESS_SERVICE_INTERNAL_URL)
+        || normalizeBase(process.env.BUSINESS_SERVICE_URL);
+
+      if (!resolvedBusinessBase) {
+        try {
+          const fetched = await fetchBusinessServiceUrl(businessId, inferredScheme);
+          resolvedBusinessBase = normalizeBase(fetched);
+        } catch (err) {
+          request.log.debug({ err }, 'BUSINESS_SERVICE_URL_DISCOVERY_FAILED');
         }
-      } catch {
-        couponsList = [];
       }
 
-      try {
-        const res = await axios.post(`${base}/api/v1/prizes/progression`, {
-          businessId,
-          stamps: Math.max(0, Number(validStamps) || 0),
-        }, { headers });
-        const data = (res.data && res.data.data != null) ? res.data.data : res.data;
-        if (data && typeof data === 'object') {
-          const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
-          const stampsNextPrize = Number((data as any).stampsNextPrize ?? 0) || 0;
-          const needed = Number((data as any).stampsNeededForNextPrize);
-          const fallbackNeeded = Math.max(0, stampsNextPrize - Math.max(0, Number(validStamps) || 0));
-          nextPrize = {
-            name: (data as any).nextPrizeName ?? null,
-            stampsLastPrize,
-            stampsNextPrize,
-            stampsNeededForNextPrize: Number.isFinite(needed) ? Math.max(0, needed) : fallbackNeeded,
-          };
+      if (resolvedBusinessBase) {
+        try {
+          const res = await axios.get(`${resolvedBusinessBase}/api/v1/coupons`, {
+            params: { userId: user.id, businessId },
+            headers,
+          });
+          const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
+          const coupons = Array.isArray(payload) ? payload : [];
+          const now = Date.now();
+          couponsList = coupons.filter((c: any) => !c?.isRedeemed && (!c?.expiredAt || new Date(c.expiredAt).getTime() > now));
+          if (couponsList.length > validCoupons) {
+            validCoupons = couponsList.length;
+          }
+        } catch (err) {
+          couponsList = [];
+          request.log.warn({ err, base: resolvedBusinessBase }, 'BUSINESS_SERVICE_COUPONS_FETCH_FAILED');
         }
-      } catch {
-        nextPrize = null;
+
+        try {
+          const res = await axios.post(`${resolvedBusinessBase}/api/v1/prizes/progression`, {
+            businessId,
+            stamps: Math.max(0, Number(validStamps) || 0),
+          }, { headers });
+          const data = (res.data && res.data.data != null) ? res.data.data : res.data;
+          if (data && typeof data === 'object') {
+            const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
+            const stampsNextPrize = Number((data as any).stampsNextPrize ?? 0) || 0;
+            const needed = Number((data as any).stampsNeededForNextPrize);
+            const fallbackNeeded = Math.max(0, stampsNextPrize - Math.max(0, Number(validStamps) || 0));
+            nextPrize = {
+              name: (data as any).nextPrizeName ?? null,
+              stampsLastPrize,
+              stampsNextPrize,
+              stampsNeededForNextPrize: Number.isFinite(needed) ? Math.max(0, needed) : fallbackNeeded,
+            };
+          }
+        } catch (err) {
+          request.log.warn({ err, base: resolvedBusinessBase }, 'BUSINESS_SERVICE_PRIZE_PROGRESSION_FAILED');
+          nextPrize = null;
+        }
       }
     }
 
