@@ -7,6 +7,7 @@ import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
+import { ensureDomainMembership } from '@/utils/membershipSync.js';
 import { registerSchema } from '@user-service/types';
 
 const oauthRegisterSchema = z.object({
@@ -162,6 +163,96 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
       attributes.signupProvider = ['google'];
     }
     dbg({ attributes }, 'Keycloak attributes payload');
+
+    let existingUser = googleSub ? await repository.findUserByGoogleSub(googleSub) : null;
+    if (!existingUser) {
+      existingUser = await repository.findUserByEmail(registerData.email);
+    }
+
+    if (existingUser) {
+      if (authType !== 'oauth') {
+        return {
+          statusCode: 409,
+          body: {
+            error: 'EMAIL_ALREADY_EXISTS',
+            message: 'Esiste già un account con questa email. Effettua l\'accesso.',
+          }
+        };
+      }
+
+      if (googleSub && (existingUser as any).googleSub !== googleSub) {
+        await repository.upsertUserByKeycloakSub(existingUser.keycloakSub, { googleSub });
+        existingUser = await repository.findUserByKeycloakSub(existingUser.keycloakSub);
+      }
+
+      let membershipResult = { created: false, synced: false, skipped: true };
+      if (domain && (domain.businessId || domain.brandId)) {
+  const extraAttrs: Record<string, unknown> | undefined = googleSub ? { googleSub: [googleSub], signupProvider: ['google'] } : undefined;
+        membershipResult = await ensureDomainMembership({
+          repository,
+          tokenService,
+          user: { id: existingUser.id, keycloakSub: existingUser.keycloakSub },
+          domain,
+          logger: request.log,
+          role: 'USER',
+          ...(extraAttrs ? { extraAttributes: extraAttrs as Record<string, unknown> } : {}),
+        });
+        if (!membershipResult.created && !membershipResult.skipped) {
+          return {
+            statusCode: 409,
+            body: {
+              error: 'USER_ALREADY_REGISTERED_FOR_BRAND',
+              message: 'Hai già un account per questo brand. Effettua l\'accesso.',
+            }
+          };
+        }
+      }
+
+      const tempPassword = loginPassword;
+      try {
+        await axios.put(
+          `${baseUrl}/admin/realms/${realm}/users/${existingUser.keycloakSub}`,
+          { emailVerified: false },
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+      } catch (err) {
+        request.log.warn({ err }, 'Failed to reset required actions for existing user');
+      }
+
+      try {
+        await axios.put(
+          `${baseUrl}/admin/realms/${realm}/users/${existingUser.keycloakSub}/reset-password`,
+          { type: 'password', temporary: false, value: tempPassword },
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+      } catch (err) {
+        request.log.error({ err }, 'Failed to set password for existing Google registration');
+        return { statusCode: 500, body: { error: 'GOOGLE_LOGIN_PASSWORD_RESET_FAILED' } };
+      }
+
+      try {
+        const tokenRes = await issuePasswordGrant(existingUser.email || registerData.email, tempPassword);
+        const tokens = tokenRes.data;
+        return {
+          statusCode: 200,
+          body: {
+            ...tokens,
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            user: {
+              id: existingUser.id,
+              keycloakSub: existingUser.keycloakSub,
+              email: existingUser.email,
+            },
+            membershipCreated: membershipResult.created,
+          },
+        };
+      } catch (err: any) {
+        const detail = err?.response?.data || err?.message || 'Unknown error';
+        request.log.error({ err, detail }, 'GOOGLE_LOGIN_TOKEN_EXCHANGE_FAILED');
+        return { statusCode: 401, body: { error: 'GOOGLE_LOGIN_FAILED', detail } };
+      }
+    }
 
     const kcResp = await axios.post(
       `${baseUrl}/admin/realms/${realm}/users`,

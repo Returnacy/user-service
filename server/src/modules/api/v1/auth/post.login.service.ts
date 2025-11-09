@@ -6,15 +6,16 @@ import { z } from 'zod';
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
+import { ensureDomainMembership } from '@/utils/membershipSync.js';
 
 const legacyLoginSchema = z.object({
-  username: z.string().email(),
+  username: z.email(),
   password: z.string().min(1)
 });
 
 const passwordLoginSchema = z.object({
   authType: z.literal('password'),
-  email: z.string().email(),
+  email: z.email(),
   password: z.string().min(1)
 });
 
@@ -176,6 +177,24 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         };
       }
 
+      const membershipAttrs: Record<string, unknown> | undefined = googleSub
+        ? { googleSub: [googleSub], signupProvider: ['google'] }
+        : undefined;
+      if (domain || membershipAttrs) {
+        try {
+          await ensureDomainMembership({
+            repository,
+            tokenService,
+            user: { id: user.id, keycloakSub: user.keycloakSub },
+            domain,
+            logger: request.log,
+            ...(membershipAttrs ? { extraAttributes: membershipAttrs } : {}),
+          });
+        } catch (err) {
+          request.log.error({ err, userId: user.id, domain }, 'Failed to ensure membership for Google login');
+        }
+      }
+
       const adminAccessToken = await tokenService.getAccessToken();
       const baseUrl = process.env.KEYCLOAK_BASE_URL!;
       const realm = process.env.KEYCLOAK_REALM!;
@@ -183,11 +202,11 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
       try {
         await axios.put(
           `${baseUrl}/admin/realms/${realm}/users/${user.keycloakSub}`,
-          { emailVerified: true, attributes: { googleSub: [googleSub] } },
+          { emailVerified: true },
           { headers: { Authorization: `Bearer ${adminAccessToken}` } }
         );
       } catch (err) {
-        request.log.warn({ err }, 'Failed to sync googleSub attribute on Keycloak user');
+        request.log.warn({ err }, 'Failed to mark Keycloak user as email verified');
       }
 
       const tempPassword = crypto.randomBytes(24).toString('hex');

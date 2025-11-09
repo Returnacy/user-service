@@ -39,3 +39,46 @@ export function parseTokenMemberships(rawMemberships: unknown): TokenMembership[
   }
   return normalized;
 }
+
+export function normalizeMemberships(rawMemberships: unknown): Membership[] {
+  const parsed = parseTokenMemberships(rawMemberships);
+  return parsed.map((m) => {
+    const brandId = typeof m.brandId === 'string' && m.brandId.trim().length > 0 ? m.brandId : null;
+    const businessId = typeof m.businessId === 'string' && m.businessId.trim().length > 0 ? m.businessId : null;
+    const roles = Array.isArray(m.roles) ? m.roles.map((role) => String(role))
+      : (typeof m.role === 'string' && m.role.trim().length > 0 ? [m.role.trim()] : []);
+    return {
+      brandId,
+      businessId,
+      roles,
+    } satisfies Membership;
+  });
+}
+
+export function membershipMatches(target: { brandId?: string | null; businessId?: string | null }, entry: Membership): boolean {
+  const targetBusiness = target.businessId ?? null;
+  const targetBrand = target.brandId ?? null;
+  if (targetBusiness && entry.businessId) return entry.businessId === targetBusiness;
+  if (targetBrand && entry.brandId) return entry.brandId === targetBrand;
+  return false;
+}
+
+export function ensureMembershipEntry(
+  existing: Membership[],
+  candidate: { brandId?: string | null; businessId?: string | null; roles?: string[] },
+  defaultRole = 'user'
+): { updated: boolean; memberships: Membership[] } {
+  const brandId = candidate.brandId ?? null;
+  const businessId = candidate.businessId ?? null;
+  if (!brandId && !businessId) return { updated: false, memberships: existing };
+
+  const alreadyPresent = existing.some((entry) => membershipMatches({ brandId, businessId }, entry));
+  if (alreadyPresent) return { updated: false, memberships: existing };
+
+  const roles = candidate.roles && candidate.roles.length > 0
+    ? candidate.roles.map((role) => String(role))
+    : [defaultRole];
+
+  const next: Membership = { brandId, businessId, roles };
+  return { updated: true, memberships: [...existing, next] };
+}
