@@ -1,7 +1,5 @@
 import { createLocalJWKSet, createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JWTPayload, JSONWebKeySet, RemoteJWKSetOptions } from 'jose';
-import type { Dispatcher } from 'undici';
-import { ProxyAgent } from 'undici';
 
 const DEFAULT_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
@@ -18,19 +16,6 @@ function readNumberEnv(name: string, fallback: number): number {
   return fallback;
 }
 
-function resolveProxyAgent(): Dispatcher | undefined {
-  const proxyUrl = process.env.GOOGLE_JWKS_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-  if (!proxyUrl) return undefined;
-  try {
-    return new ProxyAgent(proxyUrl);
-  } catch (err) {
-    console.warn('[googleIdentity] Failed to configure proxy agent for JWKS fetch', err);
-    return undefined;
-  }
-}
-
-const cachedProxyAgent = resolveProxyAgent();
-
 function buildRemoteOptions(opts: RemoteOptions = {}): RemoteJWKSetOptions {
   const baseTimeout = readNumberEnv('GOOGLE_JWKS_TIMEOUT_MS', 15000);
   const fallbackTimeout = readNumberEnv('GOOGLE_JWKS_TIMEOUT_FALLBACK_MS', Math.max(baseTimeout * 2, 30000));
@@ -43,8 +28,6 @@ function buildRemoteOptions(opts: RemoteOptions = {}): RemoteJWKSetOptions {
 
   const cacheMaxAge = readNumberEnv('GOOGLE_JWKS_CACHE_MAX_AGE_MS', 6 * 60 * 60 * 1000);
   if (cacheMaxAge > 0) options.cacheMaxAge = cacheMaxAge;
-
-  if (cachedProxyAgent) options.agent = cachedProxyAgent;
   return options;
 }
 
@@ -86,15 +69,15 @@ export type GoogleIdTokenPayload = JWTPayload & {
 
 function resolveAudience(): string | string[] {
   const raw = process.env.GOOGLE_ID_TOKEN_AUDIENCE
-    || process.env.GOOGLE_CLIENT_ID
-    || process.env.VITE_GOOGLE_CLIENT_ID
-    || '';
+    ?? process.env.GOOGLE_CLIENT_ID
+    ?? process.env.VITE_GOOGLE_CLIENT_ID
+    ?? '';
   const candidates = raw
     .split(',')
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   if (candidates.length === 0) return 'googleID';
-  if (candidates.length === 1) return candidates[0];
+  if (candidates.length === 1) return candidates[0]!;
   return candidates;
 }
 
