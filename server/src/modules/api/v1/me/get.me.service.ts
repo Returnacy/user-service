@@ -220,21 +220,34 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
         }
 
         try {
-          const res = await axios.post(`${resolvedBusinessBase}/api/v1/prizes/progression`, {
-            businessId,
-            stamps: Math.max(0, Number(validStamps) || 0),
-          }, { headers });
+          const safeValidStamps = Math.max(0, Number(validStamps) || 0);
+          const res = await axios.get(`${resolvedBusinessBase}/api/v1/prizes/progression`, {
+            params: {
+              businessId,
+              userId: user.id,
+            },
+            headers,
+          });
           const data = (res.data && res.data.data != null) ? res.data.data : res.data;
           if (data && typeof data === 'object') {
             const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
             const stampsNextPrize = Number((data as any).stampsNextPrize ?? 0) || 0;
             const needed = Number((data as any).stampsNeededForNextPrize);
-            const fallbackNeeded = Math.max(0, stampsNextPrize - Math.max(0, Number(validStamps) || 0));
+            const fallbackNeeded = Math.max(0, (stampsNextPrize || (stampsLastPrize + 15)) - safeValidStamps);
             nextPrize = {
               name: (data as any).nextPrizeName ?? null,
               stampsLastPrize,
               stampsNextPrize,
               stampsNeededForNextPrize: Number.isFinite(needed) ? Math.max(0, needed) : fallbackNeeded,
+            };
+          } else {
+            const base = 15;
+            const last = Math.floor(safeValidStamps / base) * base;
+            nextPrize = {
+              name: null,
+              stampsLastPrize: last,
+              stampsNextPrize: last + base,
+              stampsNeededForNextPrize: Math.max(0, (last + base) - safeValidStamps),
             };
           }
         } catch (err) {
