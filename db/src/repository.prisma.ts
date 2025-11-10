@@ -188,20 +188,10 @@ export class RepositoryPrisma {
   async setMembershipCounters(userId: string, businessId: string, counters: { validStamps?: number; validCoupons?: number; totalStampsDelta?: number; totalCouponsDelta?: number }) {
     const existing = await this.getMembership(userId, businessId);
     if (!existing) {
-      // Create membership with provided counters (defaults handled by schema)
-      return prisma.userMembership.create({
-        data: {
-          userId,
-          businessId,
-          validStamps: counters.validStamps ?? 0,
-          validCoupons: counters.validCoupons ?? 0,
-          totalStamps: counters.totalStampsDelta ?? 0,
-          totalCoupons: counters.totalCouponsDelta ?? 0,
-        } as any,
-      });
+      throw Object.assign(new Error('MEMBERSHIP_NOT_FOUND'), { code: 'MEMBERSHIP_NOT_FOUND' });
     }
     const nextValidStamps = counters.validStamps ?? existing.validStamps;
-    const nextValidCoupons = counters.validCoupons ?? existing.validCoupons;
+    const nextValidCoupons = existing.validCoupons + (counters.validCoupons ?? 0);
     const nextTotalStamps = existing.totalStamps + (counters.totalStampsDelta ?? 0);
     const nextTotalCoupons = existing.totalCoupons + (counters.totalCouponsDelta ?? 0);
     return prisma.userMembership.update({
