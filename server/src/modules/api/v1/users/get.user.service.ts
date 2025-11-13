@@ -115,10 +115,10 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
       }
 
       try {
-        const res = await axios.post(`${base}/api/v1/prizes/progression`, {
-          businessId,
-          stamps: Math.max(0, Number(validStamps) || 0),
-        }, { headers });
+        const res = await axios.get(`${base}/api/v1/prizes/progression`, {
+          params: { userId: user.id },
+          headers,
+        });
         const data = (res.data && res.data.data != null) ? res.data.data : res.data;
         if (data && typeof data === 'object') {
           const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
