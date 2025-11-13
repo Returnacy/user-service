@@ -116,7 +116,7 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
 
       try {
         const res = await axios.get(`${base}/api/v1/prizes/progression`, {
-          params: { userId: user.id },
+          params: { userId: user.id, businessId },
           headers,
         });
         const data = (res.data && res.data.data != null) ? res.data.data : res.data;
