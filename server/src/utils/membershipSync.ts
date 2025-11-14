@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from 'fastify';
 
 import type { DomainResolution } from './domainMapping.js';
 import { buildMembershipAttribute, ensureMembershipEntry, normalizeMemberships } from './memberships.js';
+import { buildUserAttributeUpdatePayload } from './keycloak.js';
 
 type TokenService = { getAccessToken(): Promise<string> };
 
@@ -122,14 +123,18 @@ export async function ensureDomainMembership(options: EnsureMembershipOptions): 
     };
     nextAttrs.memberships = buildMembershipAttribute(membershipList);
 
+    const payload = buildUserAttributeUpdatePayload(kcUser, nextAttrs);
+
     await axios.put(
       `${baseUrl}/admin/realms/${realm}/users/${encodeURIComponent(user.keycloakSub)}`,
-      { attributes: nextAttrs },
+      payload,
       { headers: { Authorization: `Bearer ${adminAccessToken}` } }
     );
     result.synced = true;
   } catch (err) {
-    logger?.warn?.({ err, businessId, brandId }, 'Failed to sync Keycloak memberships attribute');
+    const responseData = (err as any)?.response?.data;
+    const responseStatus = (err as any)?.response?.status;
+    logger?.warn?.({ err, businessId, brandId, responseStatus, responseData }, 'Failed to sync Keycloak memberships attribute');
   }
 
   return result;

@@ -7,6 +7,7 @@ import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
+import { buildUserAttributeUpdatePayload } from '@/utils/keycloak.js';
 
 const legacyLoginSchema = z.object({
   username: z.email(),
@@ -145,9 +146,10 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
                     ...attrs,
                     memberships: [JSON.stringify(parsed)]
                   } as Record<string, string[]>;
+                  const payload = buildUserAttributeUpdatePayload(kcUser, nextAttrs);
                   await axios.put(
                     `${baseUrl}/admin/realms/${realm}/users/${existingAny.keycloakSub}`,
-                    { attributes: nextAttrs },
+                    payload,
                     { headers: { Authorization: `Bearer ${adminAccessToken}` } }
                   );
                 }
