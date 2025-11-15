@@ -62,7 +62,7 @@ describe('ensureDomainMembership', () => {
 
     const domain = {
       brandId: 'd290f1ee-6c54-4b01-90e6-d701748f0851',
-      businessId: 'e5f6g7h8-9i0j-1k2l-3m4n-5o6p7q8r9s0t',
+      businessId: '80d40072-ce57-4829-ace4-e54dd568bc0e',
       host: 'pizzalonga.example.com',
       service: 'frontend',
       label: 'Pizzalonga',
