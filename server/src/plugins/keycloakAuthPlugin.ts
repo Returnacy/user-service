@@ -44,14 +44,24 @@ export default fp(async (fastify) => {
 
   fastify.addHook('preHandler', async (request, reply) => {
     try {
+      // Try to get token from Authorization header first
+      let token: string | null = null;
       const header = request.headers['authorization'];
-      if (!header || typeof header !== 'string' || !header.startsWith('Bearer ')) {
-        // Permissive: allow unauthenticated requests through; protected routes must check explicitly
+      if (header && typeof header === 'string' && header.startsWith('Bearer ')) {
+        token = header.substring(7).trim();
+      }
+
+      // Fallback to cookie if no Authorization header (for cookie-based SSO)
+      if (!token && request.cookies && request.cookies['accessToken']) {
+        token = request.cookies['accessToken'];
+        fastify.log.debug('[user-service] Using access token from cookie');
+      }
+
+      // If no token at all, allow unauthenticated (permissive mode)
+      if (!token) {
         request.auth = undefined;
         return;
       }
-      const token = header.substring(7).trim();
-      if (!token) return reply.status(401).send({ error: 'Missing token' });
 
       if (process.env.NODE_ENV !== 'production') {
         try {
