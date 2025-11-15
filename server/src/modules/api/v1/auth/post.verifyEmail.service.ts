@@ -3,6 +3,7 @@ import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { renderEmailTemplate } from '@/utils/emailTemplates.js';
+import { buildResetLink, buildDomainResetBase, normalizeAbsoluteUrl, resolveDomainFromRequest } from './post.forgotPassword.service.js';
 
 type VerifyEmailBody = {
   redirectUri?: string;
@@ -24,13 +25,16 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
     if (!user?.email) return { statusCode: 404, body: { error: 'USER_NOT_FOUND' } };
 
     // Create token and compose verification link
-    const ttlMinutes = Number.parseInt(process.env.EMAIL_VERIFY_TTL_MINUTES || '1440', 10);
-    const tokenRow = await repository.createEmailVerificationToken(user.id, Number.isFinite(ttlMinutes) ? ttlMinutes : 1440);
-    const verifyBase = process.env.FRONTEND_VERIFY_EMAIL_URL || process.env.FRONTEND_BASE_URL || '';
-    if (!verifyBase) {
-      request.log.warn('FRONTEND_VERIFY_EMAIL_URL not set; sending link with token only');
-    }
-    const url = verifyBase ? `${verifyBase}?token=${encodeURIComponent(tokenRow.token)}` : `token:${tokenRow.token}`;
+  const body = (request.body || {}) as VerifyEmailBody;
+  const ttlMinutes = Number.parseInt(process.env.EMAIL_VERIFY_TTL_MINUTES || '1440', 10);
+  const tokenRow = await repository.createEmailVerificationToken(user.id, Number.isFinite(ttlMinutes) ? ttlMinutes : 1440);
+  const domain = await resolveDomainFromRequest(request);
+  const redirectBase = normalizeAbsoluteUrl(body.redirectUri ?? null);
+    const domainBase = buildDomainResetBase(domain);
+    const verifyBase = normalizeAbsoluteUrl(process.env.FRONTEND_VERIFY_EMAIL_URL || null);
+    const envBase = normalizeAbsoluteUrl(process.env.FRONTEND_BASE_URL || null, '/auth/verify-email');
+    const effectiveBase = redirectBase ?? domainBase ?? verifyBase ?? envBase;
+    const url = buildResetLink(effectiveBase, tokenRow.token);
 
     // Send email via messaging-service (Resend)
     const messagingUrl = process.env.MESSAGING_SERVICE_URL;
