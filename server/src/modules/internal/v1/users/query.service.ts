@@ -169,13 +169,15 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const processedRules = rules.map((r) => ({ ...r, value: resolveDynamicValue(r.field, r.operator, r.value) }));
 
   let candidates: any[];
-  if (brandId) {
-    candidates = await (repository.findUsersForTargetingByBrand?.(brandId, take) ?? repository.findUsersForTargeting(take));
-  } else if (businessId) {
+  if (businessId) {
     candidates = await (repository.findUsersForTargetingByBusiness?.(businessId, take) ?? repository.findUsersForTargeting(take));
+  } else if (brandId) {
+    candidates = await (repository.findUsersForTargetingByBrand?.(brandId, take) ?? repository.findUsersForTargeting(take));
   } else {
     candidates = await repository.findUsersForTargeting(take);
   }
+
+  const requiresScope = Boolean(businessId || brandId);
 
   const enriched = await Promise.all(candidates.map(async (u: any) => {
     let validStamps: number | null = null;
@@ -183,13 +185,15 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     let tokens: number | null = null;
     let validCoupons: number | null = null;
     let lastVisitedAt: Date | null = null;
-    if (businessId || brandId) {
+    let matchesRequestedScope = !requiresScope;
+    if (requiresScope) {
       try {
         const mships = await repository.listMemberships(u.id);
         let membership = null as any;
         if (businessId) membership = mships.find((ms: any) => ms.businessId === businessId);
         if (!membership && brandId) membership = mships.find((ms: any) => ms.brandId === brandId);
         if (membership) {
+          matchesRequestedScope = true;
           const stampValue = membership.validStamps as number | null;
           if (typeof stampValue === 'number' && Number.isFinite(stampValue)) {
             validStamps = stampValue;
@@ -218,7 +222,7 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
         // ignore membership enrichment errors per user
       }
     }
-    return { ...u, validStamps, totalStamps, tokens, validCoupons, lastVisitedAt };
+    return { ...u, validStamps, totalStamps, tokens, validCoupons, lastVisitedAt, matchesRequestedScope };
   }));
 
   const filteredByRules = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
@@ -242,6 +246,7 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
     : filteredByRules;
 
   const filtered = filteredBySearch.filter((row: any) => {
+    if (requiresScope && !row.matchesRequestedScope) return false;
     if (minStamps !== null && (row.validStamps ?? 0) < minStamps) return false;
     if (couponsOnly && (row.validCoupons ?? 0) <= 0) return false;
     if (lastVisitDays !== null) {
