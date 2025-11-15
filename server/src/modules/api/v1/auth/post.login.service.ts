@@ -48,6 +48,32 @@ async function issuePasswordGrant(username: string, password: string) {
 
 type ServicePayload = Record<string, unknown>;
 
+type PrepareKeycloakUserOptions = {
+  baseUrl: string;
+  realm: string;
+  userId: string;
+  adminAccessToken: string;
+};
+
+async function prepareKeycloakUserForGoogleLogin(options: PrepareKeycloakUserOptions): Promise<void> {
+  const { baseUrl, realm, userId, adminAccessToken } = options;
+  await axios.put(
+    `${baseUrl}/admin/realms/${realm}/users/${encodeURIComponent(userId)}`,
+    { emailVerified: true, requiredActions: [] },
+    { headers: { Authorization: `Bearer ${adminAccessToken}` } }
+  );
+}
+
+export function isAccountNotFullySetupError(err: any): boolean {
+  const status = err?.response?.status;
+  if (status !== 400) return false;
+  const data = err?.response?.data;
+  const errorCode = typeof data?.error === 'string' ? data.error : '';
+  const description = typeof data?.error_description === 'string' ? data.error_description : '';
+  const normalizedDescription = description.toLowerCase();
+  return errorCode === 'invalid_grant' || normalizedDescription.includes('not fully set up');
+}
+
 export async function postLoginService(request: FastifyRequest): Promise<ServiceResponse<ServicePayload>> {
   try {
     const rawBody = (request.body ?? {}) as any;
@@ -203,13 +229,14 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
       const realm = process.env.KEYCLOAK_REALM!;
 
       try {
-        await axios.put(
-          `${baseUrl}/admin/realms/${realm}/users/${user.keycloakSub}`,
-          { emailVerified: true },
-          { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-        );
+        await prepareKeycloakUserForGoogleLogin({
+          baseUrl,
+          realm,
+          userId: user.keycloakSub,
+          adminAccessToken,
+        });
       } catch (err) {
-        request.log.warn({ err }, 'Failed to mark Keycloak user as email verified');
+        request.log.warn({ err }, 'Failed to prepare Keycloak user for Google login');
       }
 
       const tempPassword = crypto.randomBytes(24).toString('hex');
@@ -224,11 +251,13 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         return { statusCode: 500, body: { error: 'GOOGLE_LOGIN_PASSWORD_RESET_FAILED' } };
       }
 
-      try {
+      const performPasswordGrant = async () => {
         const tokenRes = await issuePasswordGrant(user.email || email || emailFromGoogle, tempPassword);
-        const tokens = tokenRes.data;
+        return tokenRes.data;
+      };
 
-
+      try {
+        const tokens = await performPasswordGrant();
         return {
           statusCode: 200,
           body: {
@@ -239,6 +268,30 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
           },
         };
       } catch (err: any) {
+        if (isAccountNotFullySetupError(err)) {
+          request.log.warn({ err }, 'Keycloak reported account not fully set up during Google login; retrying');
+          try {
+            await prepareKeycloakUserForGoogleLogin({
+              baseUrl,
+              realm,
+              userId: user.keycloakSub,
+              adminAccessToken,
+            });
+            const tokens = await performPasswordGrant();
+            return {
+              statusCode: 200,
+              body: {
+                ...tokens,
+                accessToken: tokens.access_token,
+                refreshToken: tokens.refresh_token,
+                user: { id: user.id, keycloakSub: user.keycloakSub, email: user.email },
+              },
+            };
+          } catch (retryErr: any) {
+            request.log.error({ retryErr }, 'Failed to recover from Keycloak setup error during Google login');
+          }
+        }
+
         const detail = err?.response?.data || err?.message || 'Unknown error';
         request.log.error({ err, detail }, 'GOOGLE_LOGIN_TOKEN_EXCHANGE_FAILED');
         return { statusCode: 401, body: { error: 'GOOGLE_LOGIN_FAILED', detail } };
