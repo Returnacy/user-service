@@ -169,10 +169,10 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const processedRules = rules.map((r) => ({ ...r, value: resolveDynamicValue(r.field, r.operator, r.value) }));
 
   let candidates: any[];
-  if (businessId) {
-    candidates = await (repository.findUsersForTargetingByBusiness?.(businessId, take) ?? repository.findUsersForTargeting(take));
-  } else if (brandId) {
+  if (brandId) {
     candidates = await (repository.findUsersForTargetingByBrand?.(brandId, take) ?? repository.findUsersForTargeting(take));
+  } else if (businessId) {
+    candidates = await (repository.findUsersForTargetingByBusiness?.(businessId, take) ?? repository.findUsersForTargeting(take));
   } else {
     candidates = await repository.findUsersForTargeting(take);
   }
