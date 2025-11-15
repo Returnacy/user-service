@@ -8,7 +8,7 @@
   "main": "src/app.ts",
   "scripts": {
     "prebuild": "pnpm --filter @user-service/types build && pnpm --filter @user-service/db exec prisma generate || true && pnpm --filter @user-service/db build",
-  "build": "tsc -b . && tsc-alias -p tsconfig.json",
+    "build": "tsc -b . && tsc-alias -p tsconfig.json",
     "start": "node dist/src/app.js",
     "test": "vitest run"
   },
@@ -16,21 +16,22 @@
     "@types/node": "^24.3.0",
     "@vitest/coverage-v8": "1.6.1",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.9.2",
     "tsc-alias": "^1.8.10",
+    "typescript": "^5.9.2",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^1.6.1"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
     "@prisma/client": "6.14.0",
     "@user-service/db": "workspace:*",
     "@user-service/types": "workspace:*",
+    "axios": "^1.11.0",
     "fastify": "^5.5.0",
     "fastify-plugin": "^5.0.1",
-    "tsconfig-paths": "^4.2.0",
     "jose": "^6.0.13",
-    "zod": "^4.1.0",
-    "axios": "^1.11.0"
+    "tsconfig-paths": "^4.2.0",
+    "zod": "^4.1.0"
   }
 }

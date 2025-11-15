@@ -127,7 +127,7 @@ export function getCookieDomain(request: FastifyRequest): string | undefined {
  */
 export function getAccessTokenCookieOptions(domain: string | undefined, isProduction: boolean) {
   return {
-    domain,
+    ...(domain ? { domain } : {}),
     path: '/',
     httpOnly: false, // Allow JavaScript to read for API calls
     secure: isProduction, // Only send over HTTPS in production
@@ -145,7 +145,7 @@ export function getAccessTokenCookieOptions(domain: string | undefined, isProduc
  */
 export function getRefreshTokenCookieOptions(domain: string | undefined, isProduction: boolean) {
   return {
-    domain,
+    ...(domain ? { domain } : {}),
     path: '/',
     httpOnly: true, // Prevent JavaScript access for security
     secure: isProduction,
@@ -160,7 +160,7 @@ export function getRefreshTokenCookieOptions(domain: string | undefined, isProdu
  */
 export function getClearCookieOptions(domain: string | undefined) {
   return {
-    domain,
+    ...(domain ? { domain } : {}),
     path: '/',
   };
 }
