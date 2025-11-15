@@ -9,6 +9,7 @@ import { resolveDomain } from '@/utils/domainMapping.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
 import { buildUserAttributeUpdatePayload } from '@/utils/keycloak.js';
 
+
 const legacyLoginSchema = z.object({
   username: z.email(),
   password: z.string().min(1)
@@ -226,6 +227,8 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
       try {
         const tokenRes = await issuePasswordGrant(user.email || email || emailFromGoogle, tempPassword);
         const tokens = tokenRes.data;
+
+
         return {
           statusCode: 200,
           body: {
@@ -252,7 +255,10 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
 
     try {
       const res = await issuePasswordGrant(username, password);
-      return { statusCode: 200, body: res.data };
+      const tokens = res.data;
+
+
+      return { statusCode: 200, body: tokens };
     } catch (err: any) {
       const errData = err?.response?.data;
       const isRequiredActionsBlock = err?.response?.status === 400 && (
@@ -286,7 +292,10 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         }
 
         const retry = await issuePasswordGrant(username, password);
-        return { statusCode: 200, body: retry.data };
+        const retryTokens = retry.data;
+
+
+        return { statusCode: 200, body: retryTokens };
       } catch (e) {
         throw err;
       }
