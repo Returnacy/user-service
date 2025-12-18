@@ -13,7 +13,17 @@ import { postResetPasswordHandler } from './post.resetPassword.controller.js';
 export async function authRoute(server: FastifyInstance) {
   server.post('/register', { handler: postRegisterHandler });
   server.post('/login', { handler: postLoginHandler });
-  server.post('/google/redirect', { handler: postGoogleRedirectHandler });
+  server.post('/google/redirect', {
+    // GIS redirect mode posts from https://accounts.google.com with Origin set.
+    // Override global CORS allowlist only for this endpoint.
+    config: {
+      cors: {
+        origin: true,
+        credentials: true,
+      },
+    },
+    handler: postGoogleRedirectHandler,
+  });
   server.post('/logout', { handler: postLogoutHandler });
   server.post('/refresh', { handler: postRefreshHandler });
   server.post('/verify-email', { handler: postVerifyEmailHandler });
