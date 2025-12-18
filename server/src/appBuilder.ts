@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyCookie from '@fastify/cookie';
+import fastifyFormbody from '@fastify/formbody';
 
 import keycloakTokenPlugin from './plugins/keycloakTokenPlugin.js';
 import keycloakAuthPlugin from './plugins/keycloakAuthPlugin.js';
@@ -135,6 +136,7 @@ export async function buildServer(opts?: { overrides?: Overrides }) {
   });
 
   await server.register(fastifyCookie);
+  await server.register(fastifyFormbody);
 
   if (!opts?.overrides?.repository) {
     const { default: prismaRepositoryPlugin } = await import('./plugins/prismaRepositoryPlugin.js');

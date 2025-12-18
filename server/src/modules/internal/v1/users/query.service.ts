@@ -125,12 +125,19 @@ function isServiceRequest(request: FastifyRequest): boolean {
 }
 
 export async function postUsersQueryService(request: FastifyRequest): Promise<ServiceResponse<{ users: any[] } | { error: string }>> {
-  if (!isServiceRequest(request)) {
-    return { statusCode: 403, body: { error: 'FORBIDDEN' } };
-  }
+  try {
+    if (!isServiceRequest(request)) {
+      return { statusCode: 403, body: { error: 'FORBIDDEN' } };
+    }
 
-  const body = (request.body ?? {}) as QueryBody;
-  const rawLimit = body.limit;
+    const repository = (request.server as any).repository as any;
+    if (!repository) {
+      request.log.error('Repository not available on server instance');
+      return { statusCode: 500, body: { error: 'INTERNAL_ERROR' } };
+    }
+
+    const body = (request.body ?? {}) as QueryBody;
+    const rawLimit = body.limit;
   const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(Math.trunc(rawLimit as number), MAX_LIMIT)) : DEFAULT_LIMIT;
   const rawPage = body.page;
   const page = Number.isFinite(rawPage) ? Math.max(1, Math.trunc(rawPage as number)) : 1;
@@ -162,8 +169,6 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const businessId = body.businessId ?? null;
   const brandId = body.brandId ?? null;
   const prize = body.prize ?? null;
-
-  const repository = (request.server as any).repository as any;
 
   const rules = targetingRules.filter((r) => r.database === 'USER');
   const processedRules = rules.map((r) => ({ ...r, value: resolveDynamicValue(r.field, r.operator, r.value) }));
@@ -350,4 +355,8 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   }
 
   return { statusCode: 200, body: { users } };
+  } catch (error) {
+    request.log.error({ err: error }, 'Error in postUsersQueryService');
+    return { statusCode: 500, body: { error: 'INTERNAL_ERROR' } };
+  }
 }
