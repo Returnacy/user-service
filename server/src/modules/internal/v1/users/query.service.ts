@@ -31,6 +31,34 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const DEFAULT_MAX_TAKE = 1000;
 
+function toJsonSafe(value: unknown): unknown {
+  if (typeof value === 'bigint') {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map((v) => toJsonSafe(v));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = toJsonSafe(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function toFiniteNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') {
+    const asNumber = Number(value);
+    return Number.isFinite(asNumber) ? asNumber : null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function todayPartsUTC() {
   const d = new Date();
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -300,16 +328,16 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
   const paged = trimmed.slice(offset, offset + limit);
 
   const users = paged.map((u: any) => ({
-    id: u.id,
+    id: u.id != null ? String(u.id) : null,
     email: u.email ?? null,
     phone: u.phone ?? null,
     firstName: u.name ?? null,
     lastName: u.surname ?? null,
     attributes: {
-      ...(u.preferences ?? {}),
+      ...(toJsonSafe(u.preferences ?? {}) as Record<string, unknown>),
       birthday: u.birthday ?? null,
       stamps: u.validStamps ?? null,
-      tokens: u.tokens ?? null,
+      tokens: toFiniteNumberOrNull(u.tokens),
     },
     stats: {
       validStamps: u.validStamps ?? 0,

@@ -333,10 +333,20 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
 
       try {
         const adminTokenUrl = buildTokenUrl();
+        const adminClientId = process.env.KEYCLOAK_ADMIN_CLIENT_ID ?? process.env.KEYCLOAK_CLIENT_ID;
+        const adminClientSecret = process.env.KEYCLOAK_ADMIN_CLIENT_SECRET ?? process.env.KEYCLOAK_CLIENT_SECRET;
+
+        if (!adminClientId || !adminClientSecret) {
+          request.log.error(
+            { hasAdminClientId: !!adminClientId, hasAdminClientSecret: !!adminClientSecret },
+            'Missing Keycloak admin client credentials; cannot clear required actions'
+          );
+          throw err;
+        }
         const adminBody = new URLSearchParams({
           grant_type: 'client_credentials',
-          client_id: process.env.KEYCLOAK_CLIENT_ID!,
-          client_secret: process.env.KEYCLOAK_CLIENT_SECRET!
+          client_id: adminClientId,
+          client_secret: adminClientSecret
         });
         const adminRes = await axios.post(adminTokenUrl, adminBody, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
         const adminAccessToken: string = adminRes.data.access_token;
