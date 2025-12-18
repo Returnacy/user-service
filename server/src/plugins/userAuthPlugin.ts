@@ -15,7 +15,8 @@ declare module 'fastify' {
 export default fp(async (fastify) => {
   fastify.decorateRequest('userMemberships', undefined);
 
-  fastify.addHook('preHandler', async (request) => {
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (reply.sent) return;
     if (!request.auth) return; // requires keycloakAuthPlugin to run first
 
     const raw = (request.auth as any)?.memberships ?? (request.auth as any)?.membership;

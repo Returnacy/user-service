@@ -138,6 +138,40 @@ export async function buildServer(opts?: { overrides?: Overrides }) {
   await server.register(fastifyCookie);
   await server.register(fastifyFormbody);
 
+  // Debug switch: bypass auth + DB and return a fixed response for the CRM users query.
+  // If this still results in a 502 upstream, the request likely isn't reaching this service.
+  server.addHook('onRequest', async (request, reply) => {
+    if (process.env.INTERNAL_USERS_QUERY_MOCK !== '1') return;
+
+    const url = request.raw.url ?? '';
+    if (request.method === 'POST' && url.startsWith('/internal/v1/users/query')) {
+      const nowIso = new Date().toISOString();
+      reply.header('cache-control', 'no-store');
+      reply.status(200).send({
+        users: [
+          {
+            id: 'mock-user-1',
+            email: 'mock1@example.com',
+            phone: '+390000000001',
+            firstName: 'Mock',
+            lastName: 'UserOne',
+            attributes: { birthday: '1990-01-01', stamps: 3, tokens: 0 },
+            stats: { validStamps: 3, totalStamps: 3, validCoupons: 0, lastVisit: nowIso },
+          },
+          {
+            id: 'mock-user-2',
+            email: 'mock2@example.com',
+            phone: '+390000000002',
+            firstName: 'Mock',
+            lastName: 'UserTwo',
+            attributes: { birthday: '1985-12-31', stamps: 10, tokens: 2 },
+            stats: { validStamps: 10, totalStamps: 12, validCoupons: 1, lastVisit: nowIso },
+          },
+        ],
+      });
+    }
+  });
+
   if (!opts?.overrides?.repository) {
     const { default: prismaRepositoryPlugin } = await import('./plugins/prismaRepositoryPlugin.js');
     await server.register(prismaRepositoryPlugin);

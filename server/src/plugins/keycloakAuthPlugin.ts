@@ -43,6 +43,7 @@ export default fp(async (fastify) => {
   fastify.decorateRequest('auth', null as any);
 
   fastify.addHook('preHandler', async (request, reply) => {
+    if (reply.sent) return;
     try {
       // Try to get token from Authorization header first
       let token: string | null = null;
