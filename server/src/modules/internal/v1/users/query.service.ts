@@ -259,51 +259,88 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
 
   const requiresScope = Boolean(businessId || brandId);
 
-  const enriched = await Promise.all(candidates.map(async (u: any) => {
+  const parseFiniteNumberOrNull = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'bigint') {
+      const asNumber = Number(value);
+      return Number.isFinite(asNumber) ? asNumber : null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  let membershipByUserId: Map<string, any> | null = null;
+  if (requiresScope) {
+    try {
+      const userIds: string[] = candidates.map((u: any) => String(u.id)).filter((id: string) => id.length > 0);
+
+      let scopedMemberships: any[] = [];
+      if (businessId && typeof repository.listMembershipsForUsersByBusiness === 'function') {
+        scopedMemberships = await repository.listMembershipsForUsersByBusiness(userIds, businessId);
+      } else if (brandId && typeof repository.listMembershipsForUsersByBrand === 'function') {
+        scopedMemberships = await repository.listMembershipsForUsersByBrand(userIds, brandId);
+      } else if (typeof repository.listMemberships === 'function') {
+        // Fallback: avoid unbounded fan-out even if bulk methods are missing
+        const concurrency = 8;
+        const queue = [...userIds];
+        const collected: any[] = [];
+        const runWorker = async () => {
+          while (queue.length > 0) {
+            const id = queue.shift();
+            if (!id) continue;
+            const list = await repository.listMemberships(id);
+            if (businessId) collected.push(...list.filter((m: any) => m.businessId === businessId));
+            else if (brandId) collected.push(...list.filter((m: any) => m.brandId === brandId));
+          }
+        };
+        await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+        scopedMemberships = collected;
+      }
+
+      membershipByUserId = new Map();
+      for (const membership of scopedMemberships) {
+        const key = membership?.userId != null ? String(membership.userId) : null;
+        if (!key) continue;
+        if (!membershipByUserId.has(key)) membershipByUserId.set(key, membership);
+      }
+    } catch (error) {
+      request.log.error({ err: error }, 'Failed to load memberships for internal users query');
+      return { statusCode: 500, body: { error: 'INTERNAL_ERROR' } };
+    }
+  }
+
+  const enriched = candidates.map((u: any) => {
+    const userId = u?.id != null ? String(u.id) : '';
+    const membership = membershipByUserId?.get(userId) ?? null;
+
     let validStamps: number | null = null;
     let totalStamps: number | null = null;
     let tokens: number | null = null;
     let validCoupons: number | null = null;
     let lastVisitedAt: Date | null = null;
     let matchesRequestedScope = !requiresScope;
-    if (requiresScope) {
-      try {
-        const mships = await repository.listMemberships(u.id);
-        let membership = null as any;
-        if (businessId) membership = mships.find((ms: any) => ms.businessId === businessId);
-        if (!membership && brandId) membership = mships.find((ms: any) => ms.brandId === brandId);
-        if (membership) {
-          matchesRequestedScope = true;
-          const stampValue = membership.validStamps as number | null;
-          if (typeof stampValue === 'number' && Number.isFinite(stampValue)) {
-            validStamps = stampValue;
-          } else if (stampValue !== null && stampValue !== undefined) {
-            validStamps = Number(stampValue) || 0;
-          }
-          const totalStampValue = membership.totalStamps as number | null;
-          if (typeof totalStampValue === 'number' && Number.isFinite(totalStampValue)) {
-            totalStamps = totalStampValue;
-          } else if (totalStampValue !== null && totalStampValue !== undefined) {
-            const parsedTotal = Number(totalStampValue);
-            totalStamps = Number.isFinite(parsedTotal) ? parsedTotal : (validStamps ?? 0);
-          }
-          tokens = typeof membership.tokens === 'number' ? membership.tokens : (membership.tokens ?? null);
-          const couponValue = membership.validCoupons as number | null;
-          if (typeof couponValue === 'number' && Number.isFinite(couponValue)) {
-            validCoupons = couponValue;
-          } else if (couponValue !== null && couponValue !== undefined) {
-            validCoupons = Number(couponValue) || 0;
-          }
-          if (membership.lastVisitedAt) {
-            lastVisitedAt = new Date(membership.lastVisitedAt);
-          }
-        }
-      } catch {
-        // ignore membership enrichment errors per user
+
+    if (requiresScope && membership) {
+      matchesRequestedScope = true;
+      const vs = parseFiniteNumberOrNull(membership.validStamps);
+      validStamps = vs ?? null;
+
+      const ts = parseFiniteNumberOrNull(membership.totalStamps);
+      totalStamps = ts ?? (validStamps ?? 0);
+
+      tokens = parseFiniteNumberOrNull(membership.tokens);
+
+      const vc = parseFiniteNumberOrNull(membership.validCoupons);
+      validCoupons = vc ?? null;
+
+      if (membership.lastVisitedAt) {
+        lastVisitedAt = new Date(membership.lastVisitedAt);
       }
     }
+
     return { ...u, validStamps, totalStamps, tokens, validCoupons, lastVisitedAt, matchesRequestedScope };
-  }));
+  });
 
   const filteredByRules = enriched.filter((u: any) => processedRules.every((r) => matchesOperator(pickUserField(u, r.field), r.operator, r.value)));
 

@@ -108,6 +108,26 @@ export class RepositoryPrisma {
     return prisma.userMembership.findMany({ where: { userId } });
   }
 
+  async listMembershipsForUsersByBusiness(userIds: string[], businessId: string): Promise<UserMembership[]> {
+    if (!Array.isArray(userIds) || userIds.length === 0) return [];
+    return prisma.userMembership.findMany({
+      where: {
+        userId: { in: userIds },
+        businessId,
+      },
+    });
+  }
+
+  async listMembershipsForUsersByBrand(userIds: string[], brandId: string): Promise<UserMembership[]> {
+    if (!Array.isArray(userIds) || userIds.length === 0) return [];
+    return prisma.userMembership.findMany({
+      where: {
+        userId: { in: userIds },
+        brandId,
+      },
+    });
+  }
+
   async upsertMembership(userId: string, membership: { businessId?: string | null; brandId?: string | null; role?: UserRole }): Promise<UserMembership> {
     const businessId = membership.businessId ?? null;
     const brandId = membership.brandId ?? null;
