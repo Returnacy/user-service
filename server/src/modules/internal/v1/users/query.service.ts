@@ -158,6 +158,53 @@ export async function postUsersQueryService(request: FastifyRequest): Promise<Se
       return { statusCode: 403, body: { error: 'FORBIDDEN' } };
     }
 
+    if (process.env.INTERNAL_USERS_QUERY_MOCK === '1') {
+      const nowIso = new Date().toISOString();
+      return {
+        statusCode: 200,
+        body: {
+          users: [
+            {
+              id: 'mock-user-1',
+              email: 'mock1@example.com',
+              phone: '+390000000001',
+              firstName: 'Mock',
+              lastName: 'UserOne',
+              attributes: {
+                birthday: '1990-01-01',
+                stamps: 3,
+                tokens: 0,
+              },
+              stats: {
+                validStamps: 3,
+                totalStamps: 3,
+                validCoupons: 0,
+                lastVisit: nowIso,
+              },
+            },
+            {
+              id: 'mock-user-2',
+              email: 'mock2@example.com',
+              phone: '+390000000002',
+              firstName: 'Mock',
+              lastName: 'UserTwo',
+              attributes: {
+                birthday: '1985-12-31',
+                stamps: 10,
+                tokens: 2,
+              },
+              stats: {
+                validStamps: 10,
+                totalStamps: 12,
+                validCoupons: 1,
+                lastVisit: nowIso,
+              },
+            },
+          ],
+        },
+      };
+    }
+
     const repository = (request.server as any).repository as any;
     if (!repository) {
       request.log.error('Repository not available on server instance');
