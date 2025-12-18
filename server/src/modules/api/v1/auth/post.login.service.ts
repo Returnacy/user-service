@@ -30,7 +30,19 @@ const oauthLoginSchema = z.object({
 type TokenService = { getAccessToken(): Promise<string> };
 
 function buildTokenUrl() {
+  if (process.env.KEYCLOAK_TOKEN_URL) return process.env.KEYCLOAK_TOKEN_URL;
   return `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`;
+}
+
+function safeDetail(err: unknown): string {
+  if (!err) return 'Unknown error';
+  if (typeof err === 'string') return err.slice(0, 500);
+  if (err instanceof Error) return (err.message || 'Error').slice(0, 500);
+  try {
+    return JSON.stringify(err).slice(0, 500);
+  } catch {
+    return 'Error';
+  }
 }
 
 async function issuePasswordGrant(username: string, password: string) {
@@ -357,6 +369,14 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
     const status = error?.statusCode ?? error?.response?.status ?? 401;
     const detail = error?.response?.data || error?.message || 'Unknown error';
     request.log.error({ err: error, detail }, 'LOGIN_FAILED');
-    return { statusCode: status, body: { error: 'LOGIN_FAILED', detail } };
+    return {
+      statusCode: status,
+      body: {
+        error: 'LOGIN_FAILED',
+        // Many frontend callers only surface `message`, so include a compact detail string.
+        message: safeDetail(detail),
+        detail,
+      },
+    };
   }
 }

@@ -34,6 +34,26 @@ function safeErrorMessage(err: unknown): string {
   }
 }
 
+function tryParseRedirectFromState(stateRaw: unknown): string | undefined {
+  if (typeof stateRaw !== 'string' || !stateRaw.trim()) return undefined;
+  const state = stateRaw.trim();
+
+  // GIS `state` is opaque; we send JSON like {"redirect_uri":"https://.../auth"}
+  try {
+    const parsed = JSON.parse(state);
+    if (parsed && typeof parsed === 'object') {
+      const ru = (parsed as any).redirect_uri;
+      if (typeof ru === 'string' && ru.trim()) return ru;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Allow state to be a raw URL string as a fallback.
+  if (/^https?:\/\//i.test(state)) return state;
+  return undefined;
+}
+
 export async function postGoogleRedirectHandler(request: FastifyRequest, reply: FastifyReply) {
   // OAuth popups rely on window relationships; overly strict COOP can break postMessage.
   // If upstream (Cloudflare/Railway) doesn't override, these headers keep popups working.
@@ -45,7 +65,10 @@ export async function postGoogleRedirectHandler(request: FastifyRequest, reply: 
   const fallbackAllowed = allowedHosts.length > 0 ? allowedHosts : ['chepizzadasalva.it', 'returnacy.app', 'localhost'];
 
   const query: any = request.query || {};
-  const redirectUriRaw = typeof query.redirect_uri === 'string' ? query.redirect_uri : undefined;
+  const body: any = request.body || {};
+
+  const redirectFromState = tryParseRedirectFromState(query.state ?? body.state);
+  const redirectUriRaw = redirectFromState || (typeof query.redirect_uri === 'string' ? query.redirect_uri : undefined);
 
   let redirectUri: URL | null = null;
   if (redirectUriRaw) {
@@ -80,7 +103,6 @@ export async function postGoogleRedirectHandler(request: FastifyRequest, reply: 
     redirectUri = new URL('/auth', `https://${host}`);
   }
 
-  const body: any = request.body || {};
   const credential = typeof body.credential === 'string' ? body.credential : undefined;
   const idToken = typeof body.idToken === 'string' ? body.idToken : undefined;
   const token = credential || idToken;

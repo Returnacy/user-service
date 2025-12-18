@@ -30,6 +30,7 @@ type TokenService = { getAccessToken(): Promise<string> };
 type RegisterResponse = Record<string, unknown>;
 
 function buildTokenUrl() {
+  if (process.env.KEYCLOAK_TOKEN_URL) return process.env.KEYCLOAK_TOKEN_URL;
   return `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`;
 }
 
