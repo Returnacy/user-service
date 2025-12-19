@@ -126,7 +126,11 @@ export async function buildServer(opts?: { overrides?: Overrides }) {
         rejectedOrigins.add(origin);
         server.log.warn({ origin }, 'CORS origin rejected');
       }
-      cb(new Error('Origin not allowed by CORS policy'), false);
+      // Do not hard-fail the request. By returning `false` without an error,
+      // we simply omit CORS headers so browsers can't read responses via XHR.
+      // This avoids turning cross-site navigations / form POSTs (e.g. Google GIS redirect mode)
+      // into 500 responses.
+      cb(null, false);
     },
     allowedHeaders: corsConfig.allowedHeaders,
     exposedHeaders: corsConfig.exposedHeaders,
