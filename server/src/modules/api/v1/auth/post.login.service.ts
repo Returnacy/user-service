@@ -157,45 +157,6 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
                 request.log.warn({ mErr }, 'Failed to upsert membership for existing user');
               }
 
-              // 3) Update Keycloak memberships attribute to include new brand/business
-              try {
-                const adminAccessToken = await tokenService.getAccessToken();
-                const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-                const realm = process.env.KEYCLOAK_REALM!;
-
-                const kcGet = await axios.get(
-                  `${baseUrl}/admin/realms/${realm}/users/${existingAny.keycloakSub}`,
-                  { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-                );
-                const kcUser = kcGet.data as any;
-                const attrs = (kcUser?.attributes ?? {}) as Record<string, string[]>;
-                const rawMemberships: string = (Array.isArray(attrs.memberships) && attrs.memberships.length > 0 && typeof attrs.memberships[0] === 'string') ? attrs.memberships[0] as unknown as string : '[]';
-                let parsed: any[] = [];
-                try {
-                  const val = JSON.parse(rawMemberships);
-                  if (Array.isArray(val)) parsed = val; else if (val && typeof val === 'object') parsed = [val];
-                } catch (_) {
-                  parsed = [];
-                }
-
-                const exists = parsed.some((m: any) => (m?.businessId === domain.businessId) || (domain.brandId && m?.brandId === domain.brandId));
-                if (!exists) {
-                  parsed.push({ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] });
-                  const nextAttrs = {
-                    ...attrs,
-                    memberships: [JSON.stringify(parsed)]
-                  } as Record<string, string[]>;
-                  const payload = buildUserAttributeUpdatePayload(kcUser, nextAttrs);
-                  await axios.put(
-                    `${baseUrl}/admin/realms/${realm}/users/${existingAny.keycloakSub}`,
-                    payload,
-                    { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-                  );
-                }
-              } catch (kcErr) {
-                request.log.warn({ kcErr }, 'Failed to update Keycloak memberships attribute');
-              }
-
               // Treat as authenticated user from here
               user = await repository.findUserByKeycloakSub(existingAny.keycloakSub);
             }

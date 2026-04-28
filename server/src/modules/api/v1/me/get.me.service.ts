@@ -84,17 +84,6 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
           })
           .filter((m): m is Membership => m !== null);
 
-        if (attributeMemberships.length) {
-          const attribute = buildMembershipAttribute(attributeMemberships);
-          const adminToken = await tokenService.getAccessToken();
-          const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-          const realm = process.env.KEYCLOAK_REALM!;
-          await axios.put(
-            `${baseUrl}/admin/realms/${realm}/users/${sub}`,
-            { attributes: { memberships: attribute } },
-            { headers: { Authorization: `Bearer ${adminToken}` } }
-          );
-        }
       }
 
       try {

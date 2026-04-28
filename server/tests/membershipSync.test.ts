@@ -34,31 +34,13 @@ describe('ensureDomainMembership', () => {
     vi.clearAllMocks();
   });
 
-  it('preserves Keycloak profile fields when syncing memberships', async () => {
+  it('writes membership to local DB and does not call Keycloak Admin API', async () => {
     const repository = {
       getMembership: vi.fn().mockResolvedValue(null),
       getMembershipByBrand: vi.fn().mockResolvedValue(null),
       upsertMembership: vi.fn().mockResolvedValue(undefined),
     };
     const tokenService = { getAccessToken: vi.fn().mockResolvedValue('kc-admin-token') };
-
-    const kcUser = {
-      id: 'd9a1421b-e39c-482e-b4f9-57e1f8c1b655',
-      username: 'user@example.com',
-      email: 'user@example.com',
-      firstName: 'Mario',
-      lastName: 'Rossi',
-      enabled: true,
-      emailVerified: false,
-      attributes: {
-        memberships: [
-          '[{"brandId":"385d4ebb-4c4b-46e9-8701-0d71bfd7ce47","businessId":"af941888-ec4c-458e-b905-21673241af3e","roles":["user"]}]'
-        ],
-      },
-    };
-
-    mockedAxios.get.mockResolvedValue({ data: kcUser });
-    mockedAxios.put.mockResolvedValue({ data: {} });
 
     const domain = {
       brandId: 'd290f1ee-6c54-4b01-90e6-d701748f0851',
@@ -72,7 +54,7 @@ describe('ensureDomainMembership', () => {
     const result = await ensureDomainMembership({
       repository,
       tokenService,
-      user: { id: 'internal-user-id', keycloakSub: kcUser.id },
+      user: { id: 'internal-user-id', keycloakSub: 'd9a1421b-e39c-482e-b4f9-57e1f8c1b655' },
       domain,
       logger,
     });
@@ -83,25 +65,31 @@ describe('ensureDomainMembership', () => {
       role: 'USER',
     });
 
-    expect(mockedAxios.put).toHaveBeenCalledTimes(1);
-    const [url, payload] = mockedAxios.put.mock.calls[0]!;
-    expect(url).toContain(kcUser.id);
-    expect(payload).toMatchObject({
-      email: kcUser.email,
-      firstName: kcUser.firstName,
-      lastName: kcUser.lastName,
-    });
-    expect(payload.attributes?.memberships).toHaveLength(1);
-    const membershipsJson = payload.attributes?.memberships?.[0];
-    expect(typeof membershipsJson).toBe('string');
-    const parsed = JSON.parse(membershipsJson as string);
-    expect(parsed).toHaveLength(2);
-    expect(parsed[1]).toMatchObject({
-      brandId: domain.brandId,
-      businessId: domain.businessId,
-      roles: ['user'],
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+    expect(tokenService.getAccessToken).not.toHaveBeenCalled();
+
+    expect(result).toEqual({ created: true, synced: false, skipped: false });
+  });
+
+  it('skips DB write when domain has no brand or business', async () => {
+    const repository = {
+      getMembership: vi.fn(),
+      getMembershipByBrand: vi.fn(),
+      upsertMembership: vi.fn(),
+    };
+    const tokenService = { getAccessToken: vi.fn() };
+
+    const result = await ensureDomainMembership({
+      repository,
+      tokenService,
+      user: { id: 'internal-user-id', keycloakSub: 'sub-1' },
+      domain: null,
+      logger,
     });
 
-    expect(result).toEqual({ created: true, synced: true, skipped: false });
+    expect(repository.upsertMembership).not.toHaveBeenCalled();
+    expect(mockedAxios.put).not.toHaveBeenCalled();
+    expect(result).toEqual({ created: false, synced: false, skipped: true });
   });
 });
