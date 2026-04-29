@@ -13,8 +13,11 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
     "@types/node": "^24.3.0",
+    "@types/pg": "^8.20.0",
     "@vitest/coverage-v8": "1.6.1",
+    "pg": "^8.20.0",
     "ts-node-dev": "^2.0.0",
     "tsc-alias": "^1.8.10",
     "typescript": "^5.9.2",
@@ -29,6 +32,7 @@
     "@user-service/db": "workspace:*",
     "@user-service/types": "workspace:*",
     "axios": "^1.11.0",
+    "bcryptjs": "^3.0.3",
     "fastify": "^5.5.0",
     "fastify-plugin": "^5.0.1",
     "jose": "^6.0.13",
