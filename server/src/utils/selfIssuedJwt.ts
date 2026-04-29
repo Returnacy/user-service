@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { importSPKI, importPKCS8, exportJWK, SignJWT, jwtVerify, type JWK, type JWTPayload, type CryptoKey } from 'jose';
+import { importSPKI, importPKCS8, exportJWK, decodeJwt, SignJWT, jwtVerify, type JWK, type JWTPayload, type CryptoKey } from 'jose';
 
 export type SelfIssuedConfig = {
   privateKeyPem: string;
@@ -156,4 +156,78 @@ export function _resetSelfIssuedCache(): void {
   cachedJwks = null;
   cachedSigningKey = null;
   cachedVerifyingKey = null;
+}
+
+export function useSelfIssuedJwt(): boolean {
+  if (!isSelfIssuedConfigured()) return false;
+  const flag = String(process.env.USE_SELF_ISSUED_JWT ?? '').toLowerCase().trim();
+  return flag === 'true' || flag === '1' || flag === 'yes';
+}
+
+export function isSelfIssuedToken(token: string): boolean {
+  const config = getSelfIssuedConfig();
+  if (!config) return false;
+  try {
+    const decoded = decodeJwt(token);
+    return decoded.iss === config.issuer;
+  } catch {
+    return false;
+  }
+}
+
+export type TokenPairResponse = {
+  access_token: string;
+  expires_in: number;
+  refresh_expires_in: number;
+  refresh_token: string;
+  token_type: 'Bearer';
+  scope: string;
+};
+
+export async function mintTokenPair(
+  claims: AccessTokenClaims,
+  options: { audience?: string | string[]; accessTtlSeconds?: number; refreshTtlSeconds?: number } = {},
+): Promise<TokenPairResponse> {
+  const accessTtl = options.accessTtlSeconds ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS;
+  const refreshTtl = options.refreshTtlSeconds ?? DEFAULT_REFRESH_TOKEN_TTL_SECONDS;
+
+  const accessOpts: AccessTokenOptions = { ttlSeconds: accessTtl };
+  if (options.audience !== undefined) accessOpts.audience = options.audience;
+
+  const [accessToken, refreshToken] = await Promise.all([
+    signAccessToken(claims, accessOpts),
+    signRefreshToken({ sub: claims.sub }, { ttlSeconds: refreshTtl }),
+  ]);
+
+  return {
+    access_token: accessToken,
+    expires_in: accessTtl,
+    refresh_expires_in: refreshTtl,
+    refresh_token: refreshToken,
+    token_type: 'Bearer',
+    scope: claims.scope ?? 'openid email profile',
+  };
+}
+
+export type ClaimsFromKeycloak = AccessTokenClaims;
+
+export function extractClaimsFromKeycloakToken(accessToken: string): ClaimsFromKeycloak | null {
+  try {
+    const d = decodeJwt(accessToken);
+    if (!d.sub) return null;
+    const claims: ClaimsFromKeycloak = {
+      sub: d.sub as string,
+      azp: typeof d.azp === 'string' ? (d.azp as string) : 'user-service',
+      scope: typeof d.scope === 'string' ? (d.scope as string) : 'openid email profile',
+    };
+    if (typeof d.email === 'string') claims.email = d.email;
+    if (typeof d.email_verified === 'boolean') claims.email_verified = d.email_verified;
+    if (typeof d.given_name === 'string') claims.given_name = d.given_name;
+    if (typeof d.family_name === 'string') claims.family_name = d.family_name;
+    if (typeof d.name === 'string') claims.name = d.name;
+    if (typeof d.preferred_username === 'string') claims.preferred_username = d.preferred_username;
+    return claims;
+  } catch {
+    return null;
+  }
 }

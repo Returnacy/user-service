@@ -8,6 +8,10 @@ import {
   verifySelfIssuedToken,
   getJwks,
   isSelfIssuedConfigured,
+  useSelfIssuedJwt,
+  isSelfIssuedToken,
+  mintTokenPair,
+  extractClaimsFromKeycloakToken,
   _resetSelfIssuedCache,
 } from '@/utils/selfIssuedJwt.js';
 
@@ -150,5 +154,105 @@ describe('full round-trip: sign -> publish JWKS -> verify', () => {
     process.env.JWT_ISSUER = 'https://different.local';
     _resetSelfIssuedCache();
     await expect(verifySelfIssuedToken(token)).rejects.toThrow();
+  });
+});
+
+describe('useSelfIssuedJwt', () => {
+  it('returns false when keys are not configured (regardless of flag)', () => {
+    delete process.env.JWT_PRIVATE_KEY;
+    process.env.USE_SELF_ISSUED_JWT = 'true';
+    _resetSelfIssuedCache();
+    expect(useSelfIssuedJwt()).toBe(false);
+  });
+
+  it('returns false when flag is unset', () => {
+    delete process.env.USE_SELF_ISSUED_JWT;
+    expect(useSelfIssuedJwt()).toBe(false);
+  });
+
+  it('returns true when both keys present and flag is "true"', () => {
+    process.env.USE_SELF_ISSUED_JWT = 'true';
+    expect(useSelfIssuedJwt()).toBe(true);
+  });
+
+  it('accepts "1" and "yes" as truthy', () => {
+    process.env.USE_SELF_ISSUED_JWT = '1';
+    expect(useSelfIssuedJwt()).toBe(true);
+    process.env.USE_SELF_ISSUED_JWT = 'yes';
+    expect(useSelfIssuedJwt()).toBe(true);
+  });
+
+  it('rejects unrecognized values like "0", "false"', () => {
+    process.env.USE_SELF_ISSUED_JWT = '0';
+    expect(useSelfIssuedJwt()).toBe(false);
+    process.env.USE_SELF_ISSUED_JWT = 'false';
+    expect(useSelfIssuedJwt()).toBe(false);
+  });
+});
+
+describe('isSelfIssuedToken', () => {
+  it('returns true for a token signed by us', async () => {
+    const token = await signAccessToken({ sub: 'user-1' });
+    expect(isSelfIssuedToken(token)).toBe(true);
+  });
+
+  it('returns false for a token from a different issuer', async () => {
+    // craft a fake JWT (not validly signed) with a different iss
+    const fakeJwt = [
+      Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ iss: 'https://keycloak.example.com/realms/x', sub: 'u' })).toString('base64url'),
+      'sig',
+    ].join('.');
+    expect(isSelfIssuedToken(fakeJwt)).toBe(false);
+  });
+
+  it('returns false for garbage input', () => {
+    expect(isSelfIssuedToken('not-a-jwt')).toBe(false);
+  });
+});
+
+describe('mintTokenPair', () => {
+  it('returns a Keycloak-shaped response with our access + refresh tokens', async () => {
+    const pair = await mintTokenPair({ sub: 'user-100', email: 'a@b.c' });
+    expect(pair.token_type).toBe('Bearer');
+    expect(pair.expires_in).toBe(300);
+    expect(pair.refresh_expires_in).toBe(30 * 24 * 60 * 60);
+    expect(typeof pair.access_token).toBe('string');
+    expect(typeof pair.refresh_token).toBe('string');
+
+    const accessDecoded = decodeJwt(pair.access_token);
+    expect(accessDecoded.sub).toBe('user-100');
+
+    const refreshDecoded = decodeJwt(pair.refresh_token);
+    expect((refreshDecoded as any).typ).toBe('Refresh');
+    expect(refreshDecoded.sub).toBe('user-100');
+  });
+});
+
+describe('extractClaimsFromKeycloakToken', () => {
+  it('pulls standard OIDC claims out of an access token', async () => {
+    // Build a Keycloak-shaped token using our signer (claims structure is identical)
+    const token = await signAccessToken({
+      sub: 'kc-user-1',
+      email: 'kcuser@example.com',
+      email_verified: true,
+      given_name: 'Kc',
+      family_name: 'User',
+      name: 'Kc User',
+      preferred_username: 'kcuser',
+    });
+    const claims = extractClaimsFromKeycloakToken(token);
+    expect(claims).not.toBeNull();
+    expect(claims!.sub).toBe('kc-user-1');
+    expect(claims!.email).toBe('kcuser@example.com');
+    expect(claims!.email_verified).toBe(true);
+    expect(claims!.given_name).toBe('Kc');
+    expect(claims!.family_name).toBe('User');
+    expect(claims!.name).toBe('Kc User');
+    expect(claims!.preferred_username).toBe('kcuser');
+  });
+
+  it('returns null on garbage input', () => {
+    expect(extractClaimsFromKeycloakToken('not-a-jwt')).toBeNull();
   });
 });

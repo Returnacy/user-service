@@ -8,6 +8,7 @@ import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
 import { buildUserAttributeUpdatePayload } from '@/utils/keycloak.js';
+import { useSelfIssuedJwt, mintTokenPair, extractClaimsFromKeycloakToken } from '@/utils/selfIssuedJwt.js';
 
 
 const legacyLoginSchema = z.object({
@@ -43,6 +44,15 @@ function safeDetail(err: unknown): string {
   } catch {
     return 'Error';
   }
+}
+
+async function tokensForResponse(kcTokens: any): Promise<any> {
+  if (!useSelfIssuedJwt()) return kcTokens;
+  const accessToken = kcTokens?.access_token;
+  if (typeof accessToken !== 'string') return kcTokens;
+  const claims = extractClaimsFromKeycloakToken(accessToken);
+  if (!claims) return kcTokens;
+  return mintTokenPair(claims);
 }
 
 async function issuePasswordGrant(username: string, password: string) {
@@ -230,7 +240,8 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
       };
 
       try {
-        const tokens = await performPasswordGrant();
+        const kcTokens = await performPasswordGrant();
+        const tokens = await tokensForResponse(kcTokens);
         return {
           statusCode: 200,
           body: {
@@ -250,7 +261,8 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
               userId: user.keycloakSub,
               adminAccessToken,
             });
-            const tokens = await performPasswordGrant();
+            const kcTokens = await performPasswordGrant();
+            const tokens = await tokensForResponse(kcTokens);
             return {
               statusCode: 200,
               body: {
@@ -281,9 +293,7 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
 
     try {
       const res = await issuePasswordGrant(username, password);
-      const tokens = res.data;
-
-
+      const tokens = await tokensForResponse(res.data);
       return { statusCode: 200, body: tokens };
     } catch (err: any) {
       const errData = err?.response?.data;
@@ -328,9 +338,7 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         }
 
         const retry = await issuePasswordGrant(username, password);
-        const retryTokens = retry.data;
-
-
+        const retryTokens = await tokensForResponse(retry.data);
         return { statusCode: 200, body: retryTokens };
       } catch (e) {
         throw err;
