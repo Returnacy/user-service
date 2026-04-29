@@ -67,6 +67,9 @@ export class RepositoryPrisma {
   if ((data as any).googleSub !== undefined) (updateData as any).googleSub = (data as any).googleSub ?? null;
     if (data.userPrivacyPolicyAcceptance !== undefined) updateData.userPrivacyPolicyAcceptance = data.userPrivacyPolicyAcceptance as any;
     if (data.userTermsAcceptance !== undefined) updateData.userTermsAcceptance = data.userTermsAcceptance as any;
+    if ((data as any).passwordHash !== undefined) (updateData as any).passwordHash = (data as any).passwordHash;
+    if ((data as any).passwordAlgorithm !== undefined) (updateData as any).passwordAlgorithm = (data as any).passwordAlgorithm;
+    if ((data as any).passwordUpdatedAt !== undefined) (updateData as any).passwordUpdatedAt = (data as any).passwordUpdatedAt;
 
     return prisma.user.upsert({
       where: { keycloakSub: sub },
@@ -83,6 +86,9 @@ export class RepositoryPrisma {
   googleSub: (data as any).googleSub ?? null,
         userPrivacyPolicyAcceptance: data.userPrivacyPolicyAcceptance ?? false,
         userTermsAcceptance: data.userTermsAcceptance ?? false,
+        passwordHash: (data as any).passwordHash ?? null,
+        passwordAlgorithm: (data as any).passwordAlgorithm ?? null,
+        passwordUpdatedAt: (data as any).passwordUpdatedAt ?? null,
       } as any,
     });
   }
