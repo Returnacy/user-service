@@ -164,6 +164,17 @@ export function useSelfIssuedJwt(): boolean {
   return flag === 'true' || flag === '1' || flag === 'yes';
 }
 
+/**
+ * Phase 2.5 — gate local bcrypt password verification. Requires
+ * useSelfIssuedJwt() because verifying a password locally is only
+ * useful if we can also mint our own tokens after.
+ */
+export function useLocalPasswordVerification(): boolean {
+  if (!useSelfIssuedJwt()) return false;
+  const flag = String(process.env.USE_LOCAL_PASSWORD_VERIFICATION ?? '').toLowerCase().trim();
+  return flag === 'true' || flag === '1' || flag === 'yes';
+}
+
 export function isSelfIssuedToken(token: string): boolean {
   const config = getSelfIssuedConfig();
   if (!config) return false;

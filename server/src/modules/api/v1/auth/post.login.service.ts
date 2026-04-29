@@ -8,7 +8,8 @@ import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
 import { buildUserAttributeUpdatePayload } from '@/utils/keycloak.js';
-import { useSelfIssuedJwt, mintTokenPair, extractClaimsFromKeycloakToken } from '@/utils/selfIssuedJwt.js';
+import { useSelfIssuedJwt, useLocalPasswordVerification, mintTokenPair, extractClaimsFromKeycloakToken } from '@/utils/selfIssuedJwt.js';
+import bcrypt from 'bcryptjs';
 
 
 const legacyLoginSchema = z.object({
@@ -290,6 +291,35 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
     const isPasswordVariant = (credentials as any).authType === 'password';
     const username = isPasswordVariant ? (credentials as any).email : (credentials as any).username;
     const password = (credentials as any).password;
+
+    // Phase 2.5 — try local bcrypt verification first when enabled.
+    // If the local user has no passwordHash, fall through to the Keycloak
+    // path so unmigrated edge cases still work.
+    if (useLocalPasswordVerification()) {
+      const repository = (request.server as any).repository as any;
+      const localUser = await repository.findUserByEmail(username);
+      if (localUser?.passwordHash) {
+        const valid = await bcrypt.compare(password, localUser.passwordHash);
+        if (!valid) {
+          request.log.info({ username }, 'Local password verification failed');
+          return { statusCode: 401, body: { error: 'INVALID_CREDENTIALS' } };
+        }
+        request.log.info({ username, sub: localUser.keycloakSub }, '[phase-2.5] Local password verification succeeded');
+        const fullName = `${localUser.name ?? ''} ${localUser.surname ?? ''}`.trim();
+        const claims: Parameters<typeof mintTokenPair>[0] = {
+          sub: localUser.keycloakSub,
+          email: localUser.email,
+          email_verified: true,
+          given_name: localUser.name,
+          family_name: localUser.surname,
+          preferred_username: localUser.email,
+        };
+        if (fullName) claims.name = fullName;
+        const tokens = await mintTokenPair(claims);
+        return { statusCode: 200, body: tokens };
+      }
+      request.log.info({ username }, '[phase-2.5] No local passwordHash; falling through to Keycloak path');
+    }
 
     try {
       const res = await issuePasswordGrant(username, password);

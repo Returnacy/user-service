@@ -9,6 +9,7 @@ import {
   getJwks,
   isSelfIssuedConfigured,
   useSelfIssuedJwt,
+  useLocalPasswordVerification,
   isSelfIssuedToken,
   mintTokenPair,
   extractClaimsFromKeycloakToken,
@@ -187,6 +188,34 @@ describe('useSelfIssuedJwt', () => {
     expect(useSelfIssuedJwt()).toBe(false);
     process.env.USE_SELF_ISSUED_JWT = 'false';
     expect(useSelfIssuedJwt()).toBe(false);
+  });
+});
+
+describe('useLocalPasswordVerification', () => {
+  it('returns false when self-issued JWT path is off, even with flag on', () => {
+    process.env.USE_SELF_ISSUED_JWT = 'false';
+    process.env.USE_LOCAL_PASSWORD_VERIFICATION = 'true';
+    expect(useLocalPasswordVerification()).toBe(false);
+  });
+
+  it('returns false when own flag is unset', () => {
+    process.env.USE_SELF_ISSUED_JWT = 'true';
+    delete process.env.USE_LOCAL_PASSWORD_VERIFICATION;
+    expect(useLocalPasswordVerification()).toBe(false);
+  });
+
+  it('returns true only when both flags are on AND keys are configured', () => {
+    process.env.USE_SELF_ISSUED_JWT = 'true';
+    process.env.USE_LOCAL_PASSWORD_VERIFICATION = 'true';
+    expect(useLocalPasswordVerification()).toBe(true);
+  });
+
+  it('accepts "1" and "yes" as truthy', () => {
+    process.env.USE_SELF_ISSUED_JWT = 'true';
+    process.env.USE_LOCAL_PASSWORD_VERIFICATION = '1';
+    expect(useLocalPasswordVerification()).toBe(true);
+    process.env.USE_LOCAL_PASSWORD_VERIFICATION = 'yes';
+    expect(useLocalPasswordVerification()).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import axios from 'axios';
+import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 
@@ -315,6 +316,12 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     const kcUser = userInfoResp.data as any;
     const kcSub: string = kcUser.id;
 
+    // Phase 2.5 — also store a local bcrypt hash so this user can log in
+    // without Keycloak after Phase 2.5 ships. Additive and safe regardless
+    // of feature flag state: column is nullable, no consumer requires it
+    // until USE_LOCAL_PASSWORD_VERIFICATION is on.
+    const localPasswordHash = await bcrypt.hash(loginPassword, 10);
+
     const dbUser = await repository.upsertUserByKeycloakSub(kcSub, {
       email: registerData.email,
       name: registerData.name,
@@ -324,6 +331,9 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
       userTermsAcceptance: registerData.acceptTermsOfService,
       userPrivacyPolicyAcceptance: registerData.acceptPrivacyPolicy,
       googleSub: googleSub ?? undefined,
+      passwordHash: localPasswordHash,
+      passwordAlgorithm: 'bcrypt',
+      passwordUpdatedAt: new Date(),
     });
 
     if (domain) {
