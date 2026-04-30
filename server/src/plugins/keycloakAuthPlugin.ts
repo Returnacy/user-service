@@ -1,5 +1,5 @@
 import fp from 'fastify-plugin';
-import { createRemoteJWKSet, jwtVerify, decodeJwt } from 'jose';
+import { createRemoteJWKSet, importSPKI, jwtVerify, decodeJwt, type CryptoKey } from 'jose';
 import type { JWTVerifyOptions } from 'jose';
 
 export default fp(async (fastify) => {
@@ -24,16 +24,34 @@ export default fp(async (fastify) => {
   }
 
   const jwksUrl = `${KEYCLOAK_BASE_URL}/realms/${REALM}/protocol/openid-connect/certs`;
-  const JWKS = createRemoteJWKSet(new URL(jwksUrl));
+  const KEYCLOAK_JWKS = createRemoteJWKSet(new URL(jwksUrl));
+
+  // Phase 2.6 — also trust tokens we issue ourselves (same shape as consumer
+  // services' dual-issuer plugin). When JWT_ISSUER and JWT_PUBLIC_KEY are set,
+  // self-issued tokens are verified against the local public key directly.
+  const SELF_ISSUER = process.env.JWT_ISSUER?.trim();
+  const SELF_PUBLIC_KEY_PEM = process.env.JWT_PUBLIC_KEY?.trim();
+  let SELF_KEY: CryptoKey | null = null;
+  if (SELF_ISSUER && SELF_PUBLIC_KEY_PEM) {
+    try {
+      SELF_KEY = (await importSPKI(SELF_PUBLIC_KEY_PEM, 'RS256')) as CryptoKey;
+      fastify.log.info({ SELF_ISSUER }, '[user-service] Dual-issuer mode: also accepting self-issued tokens');
+    } catch (e) {
+      fastify.log.error({ err: e }, '[user-service] Failed to import JWT_PUBLIC_KEY for self-verification');
+    }
+  }
 
   const configuredIssuersEnv = process.env.KEYCLOAK_ISSUER;
-  const validIssuers: string[] = configuredIssuersEnv
+  const baseIssuers: string[] = configuredIssuersEnv
     ? configuredIssuersEnv.split(',').map(s => s.trim())
     : [
         `${KEYCLOAK_BASE_URL}/realms/${REALM}`,
         'http://localhost:8080/realms/' + REALM,
         'http://keycloak:8080/realms/' + REALM
       ];
+  const validIssuers: string[] = SELF_KEY && SELF_ISSUER
+    ? [...baseIssuers, SELF_ISSUER]
+    : baseIssuers;
 
   const audienceEnv = process.env.KEYCLOAK_AUDIENCE || process.env.KEYCLOAK_ALLOWED_AUDIENCES || '';
   const allowedAudiences = audienceEnv.split(',').map(s => s.trim()).filter(Boolean);
@@ -71,8 +89,15 @@ export default fp(async (fastify) => {
         } catch {}
       }
 
+      let tokenIss: string | undefined;
+      try { tokenIss = decodeJwt(token).iss; } catch {}
+
       const verifyOptions: any = { issuer: validIssuers, clockTolerance: CLOCK_TOLERANCE_SECONDS } as JWTVerifyOptions;
-      const { payload } = await jwtVerify(token, JWKS, verifyOptions);
+
+      const useSelfKey = SELF_KEY && tokenIss && tokenIss === SELF_ISSUER;
+      const { payload } = useSelfKey
+        ? await jwtVerify(token, SELF_KEY!, verifyOptions)
+        : await jwtVerify(token, KEYCLOAK_JWKS, verifyOptions);
 
       if (allowedAudiences.length > 0) {
         const audClaim = payload.aud;
