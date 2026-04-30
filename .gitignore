@@ -6,4 +6,8 @@ userlist.txt
 docker-compose.prod.yml
 .secrets
 .vscode
+# Migrations were previously ignored; we now version Prisma migrations.
+# Keep the catch-all but explicitly allow Prisma's migrations folder.
 migrations
+!db/prisma/migrations
+!db/prisma/migrations/**
