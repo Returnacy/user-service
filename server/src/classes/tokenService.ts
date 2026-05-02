@@ -35,7 +35,7 @@ export class TokenService {
     this.tokenUrl = config.tokenUrl;
   }
 
-  public async getAccessToken(opts: GetAccessTokenOptions = {}): Promise<string | null> {
+  public async getAccessToken(opts: GetAccessTokenOptions = {}): Promise<string> {
     const mode = opts.mode ?? 'service';
     const scope = opts.scope;
     const now = Math.floor(Date.now() / 1000);
