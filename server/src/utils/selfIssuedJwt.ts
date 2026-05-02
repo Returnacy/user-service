@@ -220,6 +220,85 @@ export async function mintTokenPair(
   };
 }
 
+export type ServiceTokenClaims = {
+  azp: string;
+  audience?: string | string[];
+  roles?: string[];
+  resourceAccess?: Record<string, { roles: string[] }>;
+  scope?: string;
+};
+
+export type ServiceTokenOptions = {
+  ttlSeconds?: number;
+};
+
+const DEFAULT_SERVICE_TOKEN_TTL_SECONDS = 300;
+
+export async function signServiceToken(
+  claims: ServiceTokenClaims,
+  options: ServiceTokenOptions = {},
+): Promise<string> {
+  const config = requireConfig();
+  const key = await getSigningKey();
+  const ttl = options.ttlSeconds ?? DEFAULT_SERVICE_TOKEN_TTL_SECONDS;
+  const audience = claims.audience ?? claims.azp;
+
+  const payload: JWTPayload = {
+    typ: 'Bearer',
+    azp: claims.azp,
+  };
+  if (claims.scope !== undefined) payload.scope = claims.scope;
+  if (claims.roles && claims.roles.length > 0) {
+    payload.realm_access = { roles: claims.roles };
+  }
+  if (claims.resourceAccess && Object.keys(claims.resourceAccess).length > 0) {
+    payload.resource_access = claims.resourceAccess;
+  }
+
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: config.alg, kid: config.kid, typ: 'JWT' })
+    .setIssuer(config.issuer)
+    .setSubject(claims.azp)
+    .setAudience(audience)
+    .setIssuedAt()
+    .setExpirationTime(`${ttl}s`)
+    .setJti(randomUUID())
+    .sign(key);
+}
+
+export type InternalServiceClients = Record<string, string>;
+
+export function getInternalServiceClients(): InternalServiceClients | null {
+  const raw = process.env.INTERNAL_SERVICE_CLIENTS;
+  if (!raw || raw.trim().length === 0) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const result: InternalServiceClients = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof k === 'string' && typeof v === 'string' && k.length > 0 && v.length > 0) {
+        result[k] = v;
+      }
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+export function validateInternalServiceCredentials(clientId: string, clientSecret: string): boolean {
+  const clients = getInternalServiceClients();
+  if (!clients) return false;
+  const expected = clients[clientId];
+  if (!expected) return false;
+  if (expected.length !== clientSecret.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i++) {
+    mismatch |= expected.charCodeAt(i) ^ clientSecret.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
 export type ClaimsFromKeycloak = AccessTokenClaims;
 
 export function extractClaimsFromKeycloakToken(accessToken: string): ClaimsFromKeycloak | null {
