@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   signServiceToken,
   validateInternalServiceCredentials,
+  getInternalServiceClients,
   type ServiceTokenClaims,
 } from '@/utils/selfIssuedJwt.js';
 
@@ -17,6 +18,13 @@ type ServiceTokenBody = {
 const ACCESS_TOKEN_TTL_SECONDS = 300;
 
 export async function internalAuthRoute(server: FastifyInstance) {
+  const clients = getInternalServiceClients();
+  if (!clients) {
+    server.log.warn('[internal-auth] INTERNAL_SERVICE_CLIENTS env var is unset, empty, or invalid JSON; service-token endpoint will reject all requests');
+  } else {
+    server.log.info({ clientCount: Object.keys(clients).length, clientIds: Object.keys(clients) }, '[internal-auth] INTERNAL_SERVICE_CLIENTS loaded');
+  }
+
   server.post<{ Body: ServiceTokenBody }>('/service-token', {
     schema: {
       body: {
