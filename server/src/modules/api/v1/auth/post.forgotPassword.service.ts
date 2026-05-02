@@ -10,7 +10,7 @@ type ForgotPasswordBody = {
   redirectUri?: string;
 };
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type ForgotPasswordResponse = { ok: true } | { error: string };
 
@@ -110,7 +110,7 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
     const messagingUrl = process.env.MESSAGING_SERVICE_URL;
     if (!messagingUrl) return { statusCode: 500, body: { error: 'MESSAGING_SERVICE_URL_NOT_CONFIGURED' } };
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
-    const accessToken = await tokenService.getAccessToken();
+    const accessToken = await tokenService.getAccessToken({ scope: 'send' });
     const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
     const businessName = process.env.BUSINESS_NAME || 'la tua attività';
     const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';

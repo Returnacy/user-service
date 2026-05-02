@@ -7,7 +7,7 @@ type MembershipInput = { brandId: string | null; businessId: string | null; role
 
 type PatchMembershipsResponse = { ok: true } | { error: string };
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 export async function patchMembershipsService(
   request: FastifyRequest<{ Params: { userId: string }; Body: { memberships?: MembershipInput[] } }>
@@ -29,7 +29,7 @@ export async function patchMembershipsService(
     }
 
     const attribute = [JSON.stringify(membershipsInput)];
-    const adminToken = await tokenService.getAccessToken();
+    const adminToken = await tokenService.getAccessToken({ mode: 'admin' });
     const baseUrl = process.env.KEYCLOAK_BASE_URL!;
     const realm = process.env.KEYCLOAK_REALM!;
 

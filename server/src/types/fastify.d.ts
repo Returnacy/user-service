@@ -3,7 +3,7 @@ import 'fastify';
 declare module 'fastify' {
   interface FastifyInstance {
     repository: any;
-    keycloakTokenService: { getAccessToken(): Promise<string | null> };
+    keycloakTokenService: { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
   }
   interface FastifyRequest {
     auth?: any;

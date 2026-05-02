@@ -5,7 +5,7 @@ import type { ServiceResponse } from '@/types/serviceResponse.js';
 
 type VerifyConfirmBody = { token: string };
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type VerifyConfirmResponse = { ok: true } | { error: string };
 
@@ -24,7 +24,7 @@ export async function postVerifyEmailConfirmService(request: FastifyRequest): Pr
 
     // Mark email verified in Keycloak
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
-    const adminAccessToken = await tokenService.getAccessToken();
+    const adminAccessToken = await tokenService.getAccessToken({ mode: 'admin' });
     const baseUrl = process.env.KEYCLOAK_BASE_URL!;
     const realm = process.env.KEYCLOAK_REALM!;
 

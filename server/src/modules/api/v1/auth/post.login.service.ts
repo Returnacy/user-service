@@ -29,7 +29,7 @@ const oauthLoginSchema = z.object({
   idToken: z.string().min(10)
 });
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 function buildTokenUrl() {
   if (process.env.KEYCLOAK_TOKEN_URL) return process.env.KEYCLOAK_TOKEN_URL;
@@ -208,7 +208,7 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         }
       }
 
-      const adminAccessToken = await tokenService.getAccessToken();
+      const adminAccessToken = await tokenService.getAccessToken({ mode: 'admin' });
       const baseUrl = process.env.KEYCLOAK_BASE_URL!;
       const realm = process.env.KEYCLOAK_REALM!;
 

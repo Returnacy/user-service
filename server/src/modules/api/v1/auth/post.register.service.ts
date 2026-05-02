@@ -26,7 +26,7 @@ const oauthRegisterSchema = z.object({
   acceptMarketing: z.boolean().optional(),
 });
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type RegisterResponse = Record<string, unknown>;
 
@@ -77,7 +77,7 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
   const repository = (request.server as any).repository as any;
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
 
-    const accessToken = await tokenService.getAccessToken();
+    const accessToken = await tokenService.getAccessToken({ mode: 'admin' });
     const baseUrl = process.env.KEYCLOAK_BASE_URL!;
     const realm = process.env.KEYCLOAK_REALM!;
 
@@ -376,7 +376,7 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
       if (!messagingUrl) {
         request.log.warn('MESSAGING_SERVICE_URL not configured; skipping verification email send');
       } else {
-        const svcToken = await tokenService.getAccessToken();
+        const svcToken = await tokenService.getAccessToken({ scope: 'send' });
         const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
         const idempotencyKey = `verify:register:${dbUser.id}:${tokenRow.id}`;
         await axios.post(`${messagingUrl}/api/v1/messages`, {

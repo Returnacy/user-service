@@ -5,7 +5,7 @@ import type { DomainResolution } from './domainMapping.js';
 import { buildMembershipAttribute, ensureMembershipEntry, normalizeMemberships } from './memberships.js';
 import { buildUserAttributeUpdatePayload } from './keycloak.js';
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type EnsureMembershipOptions = {
   repository: any;

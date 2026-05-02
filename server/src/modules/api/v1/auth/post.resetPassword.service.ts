@@ -8,7 +8,7 @@ type ResetPasswordBody = {
   newPassword: string;
 };
 
-type TokenService = { getAccessToken(): Promise<string> };
+type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type ResetPasswordResponse = { ok: true } | { error: string };
 
@@ -30,7 +30,7 @@ export async function postResetPasswordService(request: FastifyRequest): Promise
 
     // Update password via Keycloak Admin API
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
-    const adminAccessToken = await tokenService.getAccessToken();
+    const adminAccessToken = await tokenService.getAccessToken({ mode: 'admin' });
     const baseUrl = process.env.KEYCLOAK_BASE_URL!;
     const realm = process.env.KEYCLOAK_REALM!;
 
