@@ -98,10 +98,16 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
         // continue without Authorization header if service token is unavailable
       }
 
+      // Keep this endpoint responsive: it's called after staff scans on the
+      // hot stamp-application path. The customer-facing app fetches coupons
+      // directly from chepizza too, so a failed call here is graceful.
+      const USER_BUSINESS_CALL_TIMEOUT_MS = 3000;
+
       try {
         const res = await axios.get(`${base}/api/v1/coupons`, {
           params: { userId: user.id, businessId },
           headers,
+          timeout: USER_BUSINESS_CALL_TIMEOUT_MS,
         });
         const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
         const coupons = Array.isArray(payload) ? payload : [];
@@ -118,6 +124,7 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
         const res = await axios.get(`${base}/api/v1/prizes/progression`, {
           params: { userId: user.id, businessId },
           headers,
+          timeout: USER_BUSINESS_CALL_TIMEOUT_MS,
         });
         const data = (res.data && res.data.data != null) ? res.data.data : res.data;
         if (data && typeof data === 'object') {

@@ -190,11 +190,17 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
         }
       }
 
+      // /me must respond fast to keep login feeling snappy. The customer app
+      // also fetches coupons directly from chepizza as a primary source, so a
+      // failed call here is graceful.
+      const ME_BUSINESS_CALL_TIMEOUT_MS = 3000;
+
       if (resolvedBusinessBase) {
         try {
           const res = await axios.get(`${resolvedBusinessBase}/api/v1/coupons`, {
             params: { userId: user.id, businessId },
             headers,
+            timeout: ME_BUSINESS_CALL_TIMEOUT_MS,
           });
           const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
           const coupons = Array.isArray(payload) ? payload : [];
@@ -216,6 +222,7 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
               userId: user.id,
             },
             headers,
+            timeout: ME_BUSINESS_CALL_TIMEOUT_MS,
           });
           const data = (res.data && res.data.data != null) ? res.data.data : res.data;
           if (data && typeof data === 'object') {
