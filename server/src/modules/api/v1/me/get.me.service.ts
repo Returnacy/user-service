@@ -1,8 +1,7 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
-import { resolveBusinessServiceUrl, resolveDomain, fetchBusinessServiceUrl } from '@/utils/domainMapping.js';
+import { resolveDomain } from '@/utils/domainMapping.js';
 import { buildMembershipAttribute, parseTokenMemberships } from '@/utils/memberships.js';
 import type { Membership } from '@/utils/memberships.js';
 
@@ -26,7 +25,6 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
 
   try {
     const repository = (request.server as any).repository as any;
-    const tokenService = (request.server as any).keycloakTokenService as { getAccessToken(): Promise<string> };
     const sub = auth.sub as string;
 
     const existing = await repository.findUserByKeycloakSub(sub);
@@ -38,9 +36,7 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
     const forwardedHost = (request.headers['x-forwarded-host'] as string)?.split(',')[0]?.trim();
     const rawHost = forwardedHost || (request.headers['host'] as string);
     const host = rawHost ? rawHost.split(':')[0] : undefined;
-  const domain = await resolveDomain(host);
-    const forwardedProto = (request.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim();
-    const inferredScheme = forwardedProto || request.protocol;
+    const domain = await resolveDomain(host);
 
     let tokenMembershipClaims = parseTokenMemberships((auth as any).memberships);
     let memberships = await repository.listMemberships(user.id);
@@ -118,10 +114,6 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
       businessId = elevated?.businessId ?? localMemberships[0].businessId;
     }
 
-    const businessServiceBase = businessId
-      ? await resolveBusinessServiceUrl({ businessId, host: host ?? null, scheme: inferredScheme, resolvedDomain: domain })
-      : null;
-
     const inScopeMembership = businessId
       ? localMemberships.find((m: any) => m.businessId === businessId)
       : domain?.brandId
@@ -152,106 +144,20 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
       return Number.isNaN(n) ? 0 : n;
     })();
 
-    let validCoupons = membershipValidCoupons;
-    let couponsList: any[] = [];
-    let nextPrize: {
+    // /me intentionally does NOT fan out to chepizza for coupons or prize
+    // progression. The customer app fetches both directly (CORS-allowed; see
+    // customer.tsx couponsQuery + progressionQuery). Keeping /me as a pure
+    // local-DB read eliminates the cascade-failure class we hit during the
+    // Phase 2.7 cutover, and lets /me return in <10ms regardless of
+    // chepizza/domain-mapper health.
+    const validCoupons = membershipValidCoupons;
+    const couponsList: any[] = [];
+    const nextPrize: {
       name: string | null;
       stampsNeededForNextPrize: number;
       stampsNextPrize: number;
       stampsLastPrize: number;
     } | null = null;
-
-    if (businessId) {
-      const normalizeBase = (value?: string | null) => {
-        if (!value) return null;
-        const trimmed = value.trim();
-        if (!trimmed) return null;
-        return trimmed.replace(/\/+$/u, '');
-      };
-
-      const headers: Record<string, string> = {};
-      try {
-        const svcToken = await tokenService.getAccessToken();
-        if (svcToken) headers.Authorization = `Bearer ${svcToken}`;
-      } catch {
-        // continue without auth header
-      }
-
-      let resolvedBusinessBase = normalizeBase(businessServiceBase)
-        || normalizeBase(process.env.BUSINESS_SERVICE_INTERNAL_URL)
-        || normalizeBase(process.env.BUSINESS_SERVICE_URL);
-
-      if (!resolvedBusinessBase) {
-        try {
-          const fetched = await fetchBusinessServiceUrl(businessId, inferredScheme);
-          resolvedBusinessBase = normalizeBase(fetched);
-        } catch (err) {
-          request.log.debug({ err }, 'BUSINESS_SERVICE_URL_DISCOVERY_FAILED');
-        }
-      }
-
-      // /me must respond fast to keep login feeling snappy. The customer app
-      // also fetches coupons directly from chepizza as a primary source, so a
-      // failed call here is graceful.
-      const ME_BUSINESS_CALL_TIMEOUT_MS = 3000;
-
-      if (resolvedBusinessBase) {
-        try {
-          const res = await axios.get(`${resolvedBusinessBase}/api/v1/coupons`, {
-            params: { userId: user.id, businessId },
-            headers,
-            timeout: ME_BUSINESS_CALL_TIMEOUT_MS,
-          });
-          const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
-          const coupons = Array.isArray(payload) ? payload : [];
-          const now = Date.now();
-          couponsList = coupons.filter((c: any) => !c?.isRedeemed && (!c?.expiredAt || new Date(c.expiredAt).getTime() > now));
-          if (couponsList.length > validCoupons) {
-            validCoupons = couponsList.length;
-          }
-        } catch (err) {
-          couponsList = [];
-          request.log.warn({ err, base: resolvedBusinessBase }, 'BUSINESS_SERVICE_COUPONS_FETCH_FAILED');
-        }
-
-        try {
-          const safeValidStamps = Math.max(0, Number(validStamps) || 0);
-          const res = await axios.get(`${resolvedBusinessBase}/api/v1/prizes/progression`, {
-            params: {
-              businessId,
-              userId: user.id,
-            },
-            headers,
-            timeout: ME_BUSINESS_CALL_TIMEOUT_MS,
-          });
-          const data = (res.data && res.data.data != null) ? res.data.data : res.data;
-          if (data && typeof data === 'object') {
-            const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
-            const stampsNextPrize = Number((data as any).stampsNextPrize ?? 0) || 0;
-            const needed = Number((data as any).stampsNeededForNextPrize);
-            const fallbackNeeded = Math.max(0, (stampsNextPrize || (stampsLastPrize + 15)) - safeValidStamps);
-            nextPrize = {
-              name: (data as any).nextPrizeName ?? null,
-              stampsLastPrize,
-              stampsNextPrize,
-              stampsNeededForNextPrize: Number.isFinite(needed) ? Math.max(0, needed) : fallbackNeeded,
-            };
-          } else {
-            const base = 15;
-            const last = Math.floor(safeValidStamps / base) * base;
-            nextPrize = {
-              name: null,
-              stampsLastPrize: last,
-              stampsNextPrize: last + base,
-              stampsNeededForNextPrize: Math.max(0, (last + base) - safeValidStamps),
-            };
-          }
-        } catch (err) {
-          request.log.warn({ err, base: resolvedBusinessBase }, 'BUSINESS_SERVICE_PRIZE_PROGRESSION_FAILED');
-          nextPrize = null;
-        }
-      }
-    }
 
     const effectiveTotalCoupons = Math.max(membershipTotalCoupons, validCoupons);
     const usedCoupons = Math.max(0, effectiveTotalCoupons - validCoupons);
