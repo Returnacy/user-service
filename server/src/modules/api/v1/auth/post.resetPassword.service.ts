@@ -1,5 +1,5 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
+import bcrypt from 'bcryptjs';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 
@@ -7,8 +7,6 @@ type ResetPasswordBody = {
   token: string;
   newPassword: string;
 };
-
-type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type ResetPasswordResponse = { ok: true } | { error: string };
 
@@ -20,6 +18,9 @@ export async function postResetPasswordService(request: FastifyRequest): Promise
     if (!token || !newPassword) {
       return { statusCode: 400, body: { error: 'TOKEN_AND_PASSWORD_REQUIRED' } };
     }
+    if (newPassword.length < 8) {
+      return { statusCode: 400, body: { error: 'PASSWORD_TOO_SHORT' } };
+    }
 
     const repository = (request.server as any).repository as any;
     const row = await repository.consumePasswordResetToken(token);
@@ -28,17 +29,14 @@ export async function postResetPasswordService(request: FastifyRequest): Promise
     const user = await repository.findUserById(row.userId);
     if (!user) return { statusCode: 404, body: { error: 'USER_NOT_FOUND' } };
 
-    // Update password via Keycloak Admin API
-    const tokenService = (request.server as any).keycloakTokenService as TokenService;
-    const adminAccessToken = await tokenService.getAccessToken({ mode: 'admin' });
-    const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-    const realm = process.env.KEYCLOAK_REALM!;
-
-    await axios.put(
-      `${baseUrl}/admin/realms/${realm}/users/${user.keycloakSub}/reset-password`,
-      { type: 'password', temporary: false, value: newPassword },
-      { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-    );
+    // Phase 2.6: store the new password as a local bcrypt hash. Keycloak Admin
+    // API was previously called here; that dependency is gone.
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await repository.upsertUserByKeycloakSub(user.keycloakSub, {
+      passwordHash,
+      passwordAlgorithm: 'bcrypt',
+      passwordUpdatedAt: new Date(),
+    });
 
     return { statusCode: 200, body: { ok: true } };
   } catch (error: any) {

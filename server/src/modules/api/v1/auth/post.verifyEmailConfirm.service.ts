@@ -1,11 +1,8 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 
 type VerifyConfirmBody = { token: string };
-
-type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
 type VerifyConfirmResponse = { ok: true } | { error: string };
 
@@ -22,17 +19,12 @@ export async function postVerifyEmailConfirmService(request: FastifyRequest): Pr
     const user = await repository.findUserById(row.userId);
     if (!user) return { statusCode: 404, body: { error: 'USER_NOT_FOUND' } };
 
-    // Mark email verified in Keycloak
-    const tokenService = (request.server as any).keycloakTokenService as TokenService;
-    const adminAccessToken = await tokenService.getAccessToken({ mode: 'admin' });
-    const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-    const realm = process.env.KEYCLOAK_REALM!;
-
-    await axios.put(
-      `${baseUrl}/admin/realms/${realm}/users/${user.keycloakSub}`,
-      { emailVerified: true },
-      { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-    );
+    // Phase 2.6: previously this called Keycloak Admin API to set
+    // emailVerified=true on the Keycloak user_entity. With customer auth fully
+    // self-issued, the email-verified state isn't currently reflected anywhere
+    // a token consumer reads (User schema has no isVerified column yet).
+    // The token-consume above is the actual side-effect the caller relies on.
+    // Adding an isVerified column to User is a separate follow-up.
 
     return { statusCode: 200, body: { ok: true } };
   } catch (error: any) {
