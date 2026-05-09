@@ -49,20 +49,11 @@ function deriveUrlFromHost(hostOrUrl: string, scheme?: string | null): string {
 }
 
 async function getServiceHeaders(): Promise<Record<string, string>> {
-  const tokenUrl = process.env.KEYCLOAK_TOKEN_URL
-    || ((process.env.KEYCLOAK_BASE_URL && process.env.KEYCLOAK_REALM)
-      ? `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`
-      : '');
-  const clientId = process.env.KEYCLOAK_CLIENT_ID || '';
-  const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || '';
-  if (!tokenUrl || !clientId || !clientSecret) return {};
-  try {
-    const ts = new TokenService({ tokenUrl, clientId, clientSecret });
-    const token = await ts.getAccessToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  } catch {
-    return {};
-  }
+  // Phase 2.6 single-issuer cutover: domain-mapper has ENFORCE_AUTH=false in
+  // production (per staging-notes). Calling it unauthenticated is the
+  // fastest, least-fragile path — no token mint needed, no risk of hanging
+  // on a defunct Keycloak token URL or a self-call retry storm.
+  return {};
 }
 
 function ensureMapperUrl(): string {
