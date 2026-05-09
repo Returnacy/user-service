@@ -88,61 +88,14 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
       stampsLastPrize: number;
     } | null = null;
 
-    if (businessId && businessServiceBase) {
-      const base = businessServiceBase.replace(/\/$/, '');
-      const headers: Record<string, string> = {};
-      try {
-        const svcToken = await tokenService.getAccessToken();
-        if (svcToken) headers.Authorization = `Bearer ${svcToken}`;
-      } catch {
-        // continue without Authorization header if service token is unavailable
-      }
-
-      // Keep this endpoint responsive: it's called after staff scans on the
-      // hot stamp-application path. The customer-facing app fetches coupons
-      // directly from chepizza too, so a failed call here is graceful.
-      const USER_BUSINESS_CALL_TIMEOUT_MS = 3000;
-
-      try {
-        const res = await axios.get(`${base}/api/v1/coupons`, {
-          params: { userId: user.id, businessId },
-          headers,
-          timeout: USER_BUSINESS_CALL_TIMEOUT_MS,
-        });
-        const payload = (res.data && res.data.coupons != null) ? res.data.coupons : res.data;
-        const coupons = Array.isArray(payload) ? payload : [];
-        const now = Date.now();
-        couponsList = coupons.filter((c: any) => !c?.isRedeemed && (!c?.expiredAt || new Date(c.expiredAt).getTime() > now));
-        if (couponsList.length > validCoupons) {
-          validCoupons = couponsList.length;
-        }
-      } catch {
-        couponsList = [];
-      }
-
-      try {
-        const res = await axios.get(`${base}/api/v1/prizes/progression`, {
-          params: { userId: user.id, businessId },
-          headers,
-          timeout: USER_BUSINESS_CALL_TIMEOUT_MS,
-        });
-        const data = (res.data && res.data.data != null) ? res.data.data : res.data;
-        if (data && typeof data === 'object') {
-          const stampsLastPrize = Number((data as any).stampsLastPrize ?? 0) || 0;
-          const stampsNextPrize = Number((data as any).stampsNextPrize ?? 0) || 0;
-          const needed = Number((data as any).stampsNeededForNextPrize);
-          const fallbackNeeded = Math.max(0, stampsNextPrize - Math.max(0, Number(validStamps) || 0));
-          nextPrize = {
-            name: (data as any).nextPrizeName ?? null,
-            stampsLastPrize,
-            stampsNextPrize,
-            stampsNeededForNextPrize: Number.isFinite(needed) ? Math.max(0, needed) : fallbackNeeded,
-          };
-        }
-      } catch {
-        nextPrize = null;
-      }
-    }
+    // Phase 2.6: this endpoint no longer fans out to chepizza. The previous
+    // tokenService.getAccessToken() call had no timeout and would hang ~30s
+    // on the now-defunct Keycloak token URL whenever isSelfIssuedMode wasn't
+    // active. The CRM frontend fetches coupons + progression directly from
+    // chepizza-business when needed (same pattern as /me + customer.tsx).
+    void businessServiceBase;
+    void tokenService;
+    void axios;
 
     const effectiveTotalCoupons = Math.max(membershipTotalCoupons, validCoupons);
     const usedCoupons = Math.max(0, effectiveTotalCoupons - validCoupons);
