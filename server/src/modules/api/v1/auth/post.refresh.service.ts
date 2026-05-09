@@ -1,5 +1,4 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
 import { z } from 'zod';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
@@ -23,33 +22,27 @@ export async function postRefreshService(request: FastifyRequest): Promise<Servi
       return { statusCode: 401, body: { error: 'MISSING_REFRESH_TOKEN' } };
     }
 
-    if (isSelfIssuedToken(refreshToken)) {
-      try {
-        const { payload } = await verifySelfIssuedToken(refreshToken);
-        if (payload.typ && payload.typ !== 'Refresh') {
-          return { statusCode: 401, body: { error: 'INVALID_REFRESH_TOKEN_TYPE' } };
-        }
-        if (!payload.sub) {
-          return { statusCode: 401, body: { error: 'INVALID_REFRESH_TOKEN_SUBJECT' } };
-        }
-        const tokens = await mintTokenPair({ sub: payload.sub as string });
-        return { statusCode: 200, body: tokens };
-      } catch (err) {
-        request.log.warn({ err }, 'Self-issued refresh token verification failed');
-        return { statusCode: 401, body: { error: 'REFRESH_FAILED' } };
-      }
+    if (!isSelfIssuedToken(refreshToken)) {
+      // Phase 2.6: Keycloak refresh path was removed. A non-self-issued refresh
+      // token is from the legacy Keycloak flow; that issuer is going away.
+      // Force re-login so the user gets a self-issued token pair.
+      return { statusCode: 401, body: { error: 'REFRESH_TOKEN_LEGACY_REQUIRES_RELOGIN' } };
     }
 
-    const tokenUrl = `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`;
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: process.env.KEYCLOAK_CLIENT_ID!,
-      client_secret: process.env.KEYCLOAK_CLIENT_SECRET!,
-    });
-
-    const res = await axios.post(tokenUrl, body, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-    return { statusCode: 200, body: res.data };
+    try {
+      const { payload } = await verifySelfIssuedToken(refreshToken);
+      if (payload.typ && payload.typ !== 'Refresh') {
+        return { statusCode: 401, body: { error: 'INVALID_REFRESH_TOKEN_TYPE' } };
+      }
+      if (!payload.sub) {
+        return { statusCode: 401, body: { error: 'INVALID_REFRESH_TOKEN_SUBJECT' } };
+      }
+      const tokens = await mintTokenPair({ sub: payload.sub as string });
+      return { statusCode: 200, body: tokens };
+    } catch (err) {
+      request.log.warn({ err }, 'Self-issued refresh token verification failed');
+      return { statusCode: 401, body: { error: 'REFRESH_FAILED' } };
+    }
   } catch (error: any) {
     const detail = error?.response?.data || error?.message || 'Unknown error';
     request.log.error({ err: error, detail }, 'REFRESH_FAILED');

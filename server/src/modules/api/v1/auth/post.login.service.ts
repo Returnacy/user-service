@@ -1,16 +1,12 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
-import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
-import { buildUserAttributeUpdatePayload } from '@/utils/keycloak.js';
-import { useSelfIssuedJwt, useLocalPasswordVerification, mintTokenPair, extractClaimsFromKeycloakToken } from '@/utils/selfIssuedJwt.js';
-import bcrypt from 'bcryptjs';
-
+import { mintTokenPair, useLocalPasswordVerification, type AccessTokenClaims } from '@/utils/selfIssuedJwt.js';
 
 const legacyLoginSchema = z.object({
   username: z.email(),
@@ -31,10 +27,7 @@ const oauthLoginSchema = z.object({
 
 type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?: string }): Promise<string> };
 
-function buildTokenUrl() {
-  if (process.env.KEYCLOAK_TOKEN_URL) return process.env.KEYCLOAK_TOKEN_URL;
-  return `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`;
-}
+type ServicePayload = Record<string, unknown>;
 
 function safeDetail(err: unknown): string {
   if (!err) return 'Unknown error';
@@ -47,54 +40,18 @@ function safeDetail(err: unknown): string {
   }
 }
 
-async function tokensForResponse(kcTokens: any): Promise<any> {
-  if (!useSelfIssuedJwt()) return kcTokens;
-  const accessToken = kcTokens?.access_token;
-  if (typeof accessToken !== 'string') return kcTokens;
-  const claims = extractClaimsFromKeycloakToken(accessToken);
-  if (!claims) return kcTokens;
-  return mintTokenPair(claims);
-}
-
-async function issuePasswordGrant(username: string, password: string) {
-  const tokenUrl = buildTokenUrl();
-  const form = new URLSearchParams({
-    grant_type: 'password',
-    username,
-    password,
-    client_id: process.env.KEYCLOAK_CLIENT_ID!,
-    client_secret: process.env.KEYCLOAK_CLIENT_SECRET!,
-    scope: 'openid profile email offline_access'
-  });
-  return axios.post(tokenUrl, form, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-}
-
-type ServicePayload = Record<string, unknown>;
-
-type PrepareKeycloakUserOptions = {
-  baseUrl: string;
-  realm: string;
-  userId: string;
-  adminAccessToken: string;
-};
-
-async function prepareKeycloakUserForGoogleLogin(options: PrepareKeycloakUserOptions): Promise<void> {
-  const { baseUrl, realm, userId, adminAccessToken } = options;
-  await axios.put(
-    `${baseUrl}/admin/realms/${realm}/users/${encodeURIComponent(userId)}`,
-    { emailVerified: true, requiredActions: [] },
-    { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-  );
-}
-
-export function isAccountNotFullySetupError(err: any): boolean {
-  const status = err?.response?.status;
-  if (status !== 400) return false;
-  const data = err?.response?.data;
-  const errorCode = typeof data?.error === 'string' ? data.error : '';
-  const description = typeof data?.error_description === 'string' ? data.error_description : '';
-  const normalizedDescription = description.toLowerCase();
-  return errorCode === 'invalid_grant' || normalizedDescription.includes('not fully set up');
+function buildClaims(user: { keycloakSub: string; email: string; name?: string | null; surname?: string | null }): AccessTokenClaims {
+  const fullName = `${user.name ?? ''} ${user.surname ?? ''}`.trim();
+  const claims: AccessTokenClaims = {
+    sub: user.keycloakSub,
+    email: user.email,
+    email_verified: true,
+    preferred_username: user.email,
+  };
+  if (user.name) claims.given_name = user.name;
+  if (user.surname) claims.family_name = user.surname;
+  if (fullName) claims.name = fullName;
+  return claims;
 }
 
 export async function postLoginService(request: FastifyRequest): Promise<ServiceResponse<ServicePayload>> {
@@ -107,29 +64,29 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         return { statusCode: 400, body: { error: 'UNSUPPORTED_OAUTH_PROVIDER' } };
       }
 
-  const repository = (request.server as any).repository;
+      const repository = (request.server as any).repository;
       const tokenService = (request.server as any).keycloakTokenService as TokenService;
       const googlePayload = await verifyGoogleIdToken(oauthInput.idToken);
       const googleSub = googlePayload.sub;
       const emailFromGoogle = (googlePayload.email || '').toLowerCase();
       const email = emailFromGoogle || (typeof rawBody.email === 'string' ? rawBody.email.toLowerCase() : '');
 
-  // Resolve brand/business context from request headers (like in registration)
-  const xfh = request.headers['x-forwarded-host'] as string | undefined;
-  const host = request.headers['host'] as string | undefined;
-  const origin = request.headers['origin'] as string | undefined;
-  const referer = request.headers['referer'] as string | undefined;
-  let originHost = '';
-  try { if (origin) originHost = new URL(origin).host; } catch {}
-  let refererHost = '';
-  try { if (referer) refererHost = new URL(referer).host; } catch {}
-  const [fromHost, fromXfh, fromOrigin, fromReferer] = await Promise.all([
-    host ? resolveDomain(host) : Promise.resolve(null),
-    xfh ? resolveDomain(xfh) : Promise.resolve(null),
-    originHost ? resolveDomain(originHost) : Promise.resolve(null),
-    refererHost ? resolveDomain(refererHost) : Promise.resolve(null),
-  ]);
-  const domain = fromHost || fromXfh || fromOrigin || fromReferer;
+      // Resolve brand/business context from request headers (matches register flow)
+      const xfh = request.headers['x-forwarded-host'] as string | undefined;
+      const host = request.headers['host'] as string | undefined;
+      const origin = request.headers['origin'] as string | undefined;
+      const referer = request.headers['referer'] as string | undefined;
+      let originHost = '';
+      try { if (origin) originHost = new URL(origin).host; } catch {}
+      let refererHost = '';
+      try { if (referer) refererHost = new URL(referer).host; } catch {}
+      const [fromHost, fromXfh, fromOrigin, fromReferer] = await Promise.all([
+        host ? resolveDomain(host) : Promise.resolve(null),
+        xfh ? resolveDomain(xfh) : Promise.resolve(null),
+        originHost ? resolveDomain(originHost) : Promise.resolve(null),
+        refererHost ? resolveDomain(refererHost) : Promise.resolve(null),
+      ]);
+      const domain = fromHost || fromXfh || fromOrigin || fromReferer;
 
       let user = googleSub ? await repository.findUserByGoogleSub(googleSub) : null;
       if (!user && email) {
@@ -149,15 +106,12 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
               user = await repository.findUserByKeycloakSub(user.keycloakSub);
             }
           } else {
-            // If an account with same email exists for another brand, add membership for current brand/business and sync Keycloak memberships
+            // If an account with same email exists for another brand, add membership for current brand/business
             const existingAny = await repository.findUserByEmail(email);
             if (existingAny && (domain.brandId || domain.businessId)) {
-              // 1) Link googleSub to existing user if needed
               if (googleSub && !(existingAny as any).googleSub) {
                 await repository.upsertUserByKeycloakSub(existingAny.keycloakSub, { googleSub });
               }
-
-              // 2) Upsert membership in our DB for current domain
               try {
                 await repository.upsertMembership(existingAny.id, {
                   businessId: domain.businessId,
@@ -167,8 +121,6 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
               } catch (mErr) {
                 request.log.warn({ mErr }, 'Failed to upsert membership for existing user');
               }
-
-              // Treat as authenticated user from here
               user = await repository.findUserByKeycloakSub(existingAny.keycloakSub);
             }
             // Else, fall through: user remains null -> handled below (404 register-first)
@@ -208,82 +160,19 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
         }
       }
 
-      const adminAccessToken = await tokenService.getAccessToken({ mode: 'admin' });
-      const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-      const realm = process.env.KEYCLOAK_REALM!;
-
-      try {
-        await prepareKeycloakUserForGoogleLogin({
-          baseUrl,
-          realm,
-          userId: user.keycloakSub,
-          adminAccessToken,
-        });
-      } catch (err) {
-        request.log.warn({ err }, 'Failed to prepare Keycloak user for Google login');
-      }
-
-      const tempPassword = crypto.randomBytes(24).toString('hex');
-      try {
-        await axios.put(
-          `${baseUrl}/admin/realms/${realm}/users/${user.keycloakSub}/reset-password`,
-          { type: 'password', temporary: false, value: tempPassword },
-          { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-        );
-      } catch (err) {
-        request.log.error({ err }, 'Failed to set temporary password for Google login');
-        return { statusCode: 500, body: { error: 'GOOGLE_LOGIN_PASSWORD_RESET_FAILED' } };
-      }
-
-      const performPasswordGrant = async () => {
-        const tokenRes = await issuePasswordGrant(user.email || email || emailFromGoogle, tempPassword);
-        return tokenRes.data;
+      const tokens = await mintTokenPair(buildClaims(user));
+      return {
+        statusCode: 200,
+        body: {
+          ...tokens,
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token,
+          user: { id: user.id, keycloakSub: user.keycloakSub, email: user.email },
+        },
       };
-
-      try {
-        const kcTokens = await performPasswordGrant();
-        const tokens = await tokensForResponse(kcTokens);
-        return {
-          statusCode: 200,
-          body: {
-            ...tokens,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-            user: { id: user.id, keycloakSub: user.keycloakSub, email: user.email },
-          },
-        };
-      } catch (err: any) {
-        if (isAccountNotFullySetupError(err)) {
-          request.log.warn({ err }, 'Keycloak reported account not fully set up during Google login; retrying');
-          try {
-            await prepareKeycloakUserForGoogleLogin({
-              baseUrl,
-              realm,
-              userId: user.keycloakSub,
-              adminAccessToken,
-            });
-            const kcTokens = await performPasswordGrant();
-            const tokens = await tokensForResponse(kcTokens);
-            return {
-              statusCode: 200,
-              body: {
-                ...tokens,
-                accessToken: tokens.access_token,
-                refreshToken: tokens.refresh_token,
-                user: { id: user.id, keycloakSub: user.keycloakSub, email: user.email },
-              },
-            };
-          } catch (retryErr: any) {
-            request.log.error({ retryErr }, 'Failed to recover from Keycloak setup error during Google login');
-          }
-        }
-
-        const detail = err?.response?.data || err?.message || 'Unknown error';
-        request.log.error({ err, detail }, 'GOOGLE_LOGIN_TOKEN_EXCHANGE_FAILED');
-        return { statusCode: 401, body: { error: 'GOOGLE_LOGIN_FAILED', detail } };
-      }
     }
 
+    // Password login (legacy schema with username, or new authType=password)
     const credentials = rawBody?.authType === 'password'
       ? passwordLoginSchema.parse(rawBody)
       : legacyLoginSchema.parse(rawBody);
@@ -292,88 +181,27 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
     const username = isPasswordVariant ? (credentials as any).email : (credentials as any).username;
     const password = (credentials as any).password;
 
-    // Phase 2.5 — try local bcrypt verification first when enabled.
-    // If the local user has no passwordHash, fall through to the Keycloak
-    // path so unmigrated edge cases still work.
-    if (useLocalPasswordVerification()) {
-      const repository = (request.server as any).repository as any;
-      const localUser = await repository.findUserByEmail(username);
-      if (localUser?.passwordHash) {
-        const valid = await bcrypt.compare(password, localUser.passwordHash);
-        if (!valid) {
-          request.log.info({ username }, 'Local password verification failed');
-          return { statusCode: 401, body: { error: 'INVALID_CREDENTIALS' } };
-        }
-        request.log.info({ username, sub: localUser.keycloakSub }, '[phase-2.5] Local password verification succeeded');
-        const fullName = `${localUser.name ?? ''} ${localUser.surname ?? ''}`.trim();
-        const claims: Parameters<typeof mintTokenPair>[0] = {
-          sub: localUser.keycloakSub,
-          email: localUser.email,
-          email_verified: true,
-          given_name: localUser.name,
-          family_name: localUser.surname,
-          preferred_username: localUser.email,
-        };
-        if (fullName) claims.name = fullName;
-        const tokens = await mintTokenPair(claims);
-        return { statusCode: 200, body: tokens };
-      }
-      request.log.info({ username }, '[phase-2.5] No local passwordHash; falling through to Keycloak path');
+    if (!useLocalPasswordVerification()) {
+      // Local password verification is the only supported auth path now.
+      // The flag must be on; the legacy Keycloak fallback was removed in Phase 2.6.
+      request.log.error('USE_LOCAL_PASSWORD_VERIFICATION is not enabled; password login cannot proceed');
+      return { statusCode: 503, body: { error: 'AUTH_NOT_CONFIGURED' } };
     }
 
-    try {
-      const res = await issuePasswordGrant(username, password);
-      const tokens = await tokensForResponse(res.data);
-      return { statusCode: 200, body: tokens };
-    } catch (err: any) {
-      const errData = err?.response?.data;
-      const isRequiredActionsBlock = err?.response?.status === 400 && (
-        errData?.error === 'invalid_grant' || errData?.error_description?.toLowerCase?.().includes('not fully set up')
-      );
-      if (!isRequiredActionsBlock) throw err;
-
-      try {
-        const adminTokenUrl = buildTokenUrl();
-        const adminClientId = process.env.KEYCLOAK_ADMIN_CLIENT_ID ?? process.env.KEYCLOAK_CLIENT_ID;
-        const adminClientSecret = process.env.KEYCLOAK_ADMIN_CLIENT_SECRET ?? process.env.KEYCLOAK_CLIENT_SECRET;
-
-        if (!adminClientId || !adminClientSecret) {
-          request.log.error(
-            { hasAdminClientId: !!adminClientId, hasAdminClientSecret: !!adminClientSecret },
-            'Missing Keycloak admin client credentials; cannot clear required actions'
-          );
-          throw err;
-        }
-        const adminBody = new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: adminClientId,
-          client_secret: adminClientSecret
-        });
-        const adminRes = await axios.post(adminTokenUrl, adminBody, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        const adminAccessToken: string = adminRes.data.access_token;
-
-        const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-        const realm = process.env.KEYCLOAK_REALM!;
-        const findResp = await axios.get(`${baseUrl}/admin/realms/${realm}/users`, {
-          params: { email: username },
-          headers: { Authorization: `Bearer ${adminAccessToken}` }
-        });
-        const kcUser = Array.isArray(findResp.data) ? findResp.data[0] : null;
-        if (kcUser?.id) {
-          await axios.put(
-            `${baseUrl}/admin/realms/${realm}/users/${kcUser.id}`,
-            { requiredActions: [], emailVerified: true },
-            { headers: { Authorization: `Bearer ${adminAccessToken}` } }
-          );
-        }
-
-        const retry = await issuePasswordGrant(username, password);
-        const retryTokens = await tokensForResponse(retry.data);
-        return { statusCode: 200, body: retryTokens };
-      } catch (e) {
-        throw err;
-      }
+    const repository = (request.server as any).repository as any;
+    const localUser = await repository.findUserByEmail(username);
+    if (!localUser?.passwordHash) {
+      request.log.info({ username }, 'Password login attempt for user without local passwordHash');
+      return { statusCode: 401, body: { error: 'INVALID_CREDENTIALS' } };
     }
+    const valid = await bcrypt.compare(password, localUser.passwordHash);
+    if (!valid) {
+      request.log.info({ username }, 'Local password verification failed');
+      return { statusCode: 401, body: { error: 'INVALID_CREDENTIALS' } };
+    }
+    request.log.info({ username, sub: localUser.keycloakSub }, 'Local password verification succeeded');
+    const tokens = await mintTokenPair(buildClaims(localUser));
+    return { statusCode: 200, body: tokens };
   } catch (error: any) {
     const status = error?.statusCode ?? error?.response?.status ?? 401;
     const detail = error?.response?.data || error?.message || 'Unknown error';
@@ -382,7 +210,6 @@ export async function postLoginService(request: FastifyRequest): Promise<Service
       statusCode: status,
       body: {
         error: 'LOGIN_FAILED',
-        // Many frontend callers only surface `message`, so include a compact detail string.
         message: safeDetail(detail),
         detail,
       },

@@ -9,6 +9,7 @@ import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
+import { mintTokenPair, type AccessTokenClaims } from '@/utils/selfIssuedJwt.js';
 import { registerSchema } from '@user-service/types';
 
 const oauthRegisterSchema = z.object({
@@ -30,24 +31,6 @@ type TokenService = { getAccessToken(opts?: { mode?: 'service' | 'admin'; scope?
 
 type RegisterResponse = Record<string, unknown>;
 
-function buildTokenUrl() {
-  if (process.env.KEYCLOAK_TOKEN_URL) return process.env.KEYCLOAK_TOKEN_URL;
-  return `${process.env.KEYCLOAK_BASE_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/token`;
-}
-
-async function issuePasswordGrant(username: string, password: string) {
-  const tokenUrl = buildTokenUrl();
-  const form = new URLSearchParams({
-    grant_type: 'password',
-    username,
-    password,
-    client_id: process.env.KEYCLOAK_CLIENT_ID!,
-    client_secret: process.env.KEYCLOAK_CLIENT_SECRET!,
-    scope: 'openid profile email offline_access'
-  });
-  return axios.post(tokenUrl, form, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-}
-
 function normalizeInput(raw: Record<string, any>) {
   const normalized: Record<string, any> = { ...raw };
   if (normalized.birthdate && !normalized.birthday) normalized.birthday = normalized.birthdate;
@@ -63,6 +46,20 @@ function normalizeInput(raw: Record<string, any>) {
   return normalized;
 }
 
+function buildClaims(user: { keycloakSub: string; email: string; name?: string | null; surname?: string | null }, emailVerified: boolean): AccessTokenClaims {
+  const fullName = `${user.name ?? ''} ${user.surname ?? ''}`.trim();
+  const claims: AccessTokenClaims = {
+    sub: user.keycloakSub,
+    email: user.email,
+    email_verified: emailVerified,
+    preferred_username: user.email,
+  };
+  if (user.name) claims.given_name = user.name;
+  if (user.surname) claims.family_name = user.surname;
+  if (fullName) claims.name = fullName;
+  return claims;
+}
+
 export async function postRegisterService(request: FastifyRequest): Promise<ServiceResponse<RegisterResponse>> {
   try {
     const DEBUG = process.env.DEBUG_MEMBERSHIP === '1';
@@ -74,12 +71,8 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     const normalized = normalizeInput(raw);
     const authType = normalized.authType === 'oauth' ? 'oauth' : 'password';
 
-  const repository = (request.server as any).repository as any;
+    const repository = (request.server as any).repository as any;
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
-
-    const accessToken = await tokenService.getAccessToken({ mode: 'admin' });
-    const baseUrl = process.env.KEYCLOAK_BASE_URL!;
-    const realm = process.env.KEYCLOAK_REALM!;
 
     const passwordInput = authType === 'password' ? registerSchema.parse(normalized) : null;
     const oauthInput = authType === 'oauth' ? oauthRegisterSchema.parse(normalized) : null;
@@ -131,9 +124,10 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
       acceptMarketing: oauthInput ? (oauthInput.acceptMarketing ?? false) : passwordInput!.acceptMarketing ?? false,
     };
 
+    // For OAuth, no real password is collected — generate one and store its hash so
+    // the account can later authenticate via password-recovery if Google is lost.
     const loginPassword = oauthInput ? crypto.randomBytes(24).toString('hex') : passwordInput!.password;
 
-    const attributes: Record<string, unknown> = {};
     const xfh = request.headers['x-forwarded-host'] as string | undefined;
     const host = request.headers['host'] as string | undefined;
     const origin = request.headers['origin'] as string | undefined;
@@ -152,20 +146,6 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
 
     dbg({ xfh, host, origin, referer, originHost, refererHost, resolvedFromHost, resolvedFromXfh, resolvedFromOrigin, resolvedFromReferer }, 'Resolved domain candidates');
 
-    const defaultMembership = domain ? [{ brandId: domain.brandId ?? null, businessId: domain.businessId, roles: ['user'] }] : [];
-    dbg({ defaultMembership }, 'Computed defaultMembership');
-
-    if (registerData.phone) {
-      attributes.phoneNumber = registerData.phone;
-    }
-
-    attributes.memberships = [JSON.stringify(defaultMembership)];
-    if (googleSub) {
-      attributes.googleSub = [googleSub];
-      attributes.signupProvider = ['google'];
-    }
-    dbg({ attributes }, 'Keycloak attributes payload');
-
     let existingUser = googleSub ? await repository.findUserByGoogleSub(googleSub) : null;
     if (!existingUser) {
       existingUser = await repository.findUserByEmail(registerData.email);
@@ -182,6 +162,7 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
         };
       }
 
+      // OAuth re-link: connect googleSub to the existing local user, ensure membership for current domain
       if (googleSub && (existingUser as any).googleSub !== googleSub) {
         await repository.upsertUserByKeycloakSub(existingUser.keycloakSub, { googleSub });
         existingUser = await repository.findUserByKeycloakSub(existingUser.keycloakSub);
@@ -189,7 +170,7 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
 
       let membershipResult = { created: false, synced: false, skipped: true };
       if (domain && (domain.businessId || domain.brandId)) {
-  const extraAttrs: Record<string, unknown> | undefined = googleSub ? { googleSub: [googleSub], signupProvider: ['google'] } : undefined;
+        const extraAttrs: Record<string, unknown> | undefined = googleSub ? { googleSub: [googleSub], signupProvider: ['google'] } : undefined;
         membershipResult = await ensureDomainMembership({
           repository,
           tokenService,
@@ -210,119 +191,28 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
         }
       }
 
-      const tempPassword = loginPassword;
-      try {
-        await axios.put(
-          `${baseUrl}/admin/realms/${realm}/users/${existingUser.keycloakSub}`,
-          { emailVerified: false },
-          { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
-      } catch (err) {
-        request.log.warn({ err }, 'Failed to reset required actions for existing user');
-      }
-
-      try {
-        await axios.put(
-          `${baseUrl}/admin/realms/${realm}/users/${existingUser.keycloakSub}/reset-password`,
-          { type: 'password', temporary: false, value: tempPassword },
-          { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
-      } catch (err) {
-        request.log.error({ err }, 'Failed to set password for existing Google registration');
-        return { statusCode: 500, body: { error: 'GOOGLE_LOGIN_PASSWORD_RESET_FAILED' } };
-      }
-
-      try {
-        const tokenRes = await issuePasswordGrant(existingUser.email || registerData.email, tempPassword);
-        const tokens = tokenRes.data;
-        return {
-          statusCode: 200,
-          body: {
-            ...tokens,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-            user: {
-              id: existingUser.id,
-              keycloakSub: existingUser.keycloakSub,
-              email: existingUser.email,
-            },
-            membershipCreated: membershipResult.created,
+      const tokens = await mintTokenPair(buildClaims(existingUser, true));
+      return {
+        statusCode: 200,
+        body: {
+          ...tokens,
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token,
+          user: {
+            id: existingUser.id,
+            keycloakSub: existingUser.keycloakSub,
+            email: existingUser.email,
           },
-        };
-      } catch (err: any) {
-        const detail = err?.response?.data || err?.message || 'Unknown error';
-        request.log.error({ err, detail }, 'GOOGLE_LOGIN_TOKEN_EXCHANGE_FAILED');
-        return { statusCode: 401, body: { error: 'GOOGLE_LOGIN_FAILED', detail } };
-      }
+          membershipCreated: membershipResult.created,
+        },
+      };
     }
 
-    const kcResp = await axios.post(
-      `${baseUrl}/admin/realms/${realm}/users`,
-      {
-        username: registerData.email,
-        email: registerData.email,
-        enabled: true,
-        // Force email verification at sign-up; user must confirm via emailed link
-        emailVerified: false,
-        firstName: registerData.name,
-        lastName: registerData.surname,
-        attributes
-      },
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    dbg({ status: kcResp.status, headers: { location: kcResp.headers['location'] } }, 'Keycloak create user response');
-
-    const location = kcResp.headers['location'] as string | undefined;
-    let keycloakId: string | undefined;
-    if (location) {
-      const parts = location.split('/');
-      keycloakId = parts[parts.length - 1];
-    }
-
-    if (!keycloakId) {
-      const findResp = await axios.get(
-        `${baseUrl}/admin/realms/${realm}/users`,
-        { params: { email: registerData.email }, headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      const user = Array.isArray(findResp.data) ? findResp.data[0] : null;
-      keycloakId = user?.id;
-    }
-
-    if (!keycloakId) {
-      return { statusCode: 500, body: { error: 'KEYCLOAK_USER_CREATION_FAILED' } };
-    }
-
-    try {
-      // Keep required actions cleared, but do NOT auto-verify email
-      await axios.put(
-        `${baseUrl}/admin/realms/${realm}/users/${keycloakId}`,
-        { requiredActions: [], emailVerified: false },
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-    } catch (err) {
-      request.log.warn({ err }, 'Failed to clear Keycloak required actions; proceeding');
-    }
-
-    await axios.put(
-      `${baseUrl}/admin/realms/${realm}/users/${keycloakId}/reset-password`,
-      { type: 'password', temporary: false, value: loginPassword },
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-
-    const userInfoResp = await axios.get(
-      `${baseUrl}/admin/realms/${realm}/users/${keycloakId}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const kcUser = userInfoResp.data as any;
-    const kcSub: string = kcUser.id;
-
-    // Phase 2.5 — also store a local bcrypt hash so this user can log in
-    // without Keycloak after Phase 2.5 ships. Additive and safe regardless
-    // of feature flag state: column is nullable, no consumer requires it
-    // until USE_LOCAL_PASSWORD_VERIFICATION is on.
+    // NEW USER PATH — local-only insert (no Keycloak)
+    const localSub = crypto.randomUUID();
     const localPasswordHash = await bcrypt.hash(loginPassword, 10);
 
-    const dbUser = await repository.upsertUserByKeycloakSub(kcSub, {
+    const dbUser = await repository.upsertUserByKeycloakSub(localSub, {
       email: registerData.email,
       name: registerData.name,
       surname: registerData.surname,
@@ -352,7 +242,7 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     if (registerData.acceptTermsOfService && latestTOS) await repository.createTermsOfServiceAcceptance(dbUser.id, latestTOS, ip, ua);
     if (registerData.acceptMarketing && latestMT) await repository.createMarketingTermsAcceptance(dbUser.id, latestMT, ip, ua);
 
-    // Send verification email with branded HTML design
+    // Send verification email (best-effort — pipeline may be broken; do not block registration)
     try {
       const ttlMinutes = Number.parseInt(process.env.EMAIL_VERIFY_TTL_MINUTES || '1440', 10);
       const tokenRow = await repository.createEmailVerificationToken(dbUser.id, Number.isFinite(ttlMinutes) ? ttlMinutes : 1440);
@@ -399,29 +289,20 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
       request.log.error({ err: sendErr }, 'Failed to send verification email after registration');
     }
 
-    try {
-      const tokenRes = await issuePasswordGrant(registerData.email, loginPassword);
-      const tokens = tokenRes.data;
-      return {
-        statusCode: 200,
-        body: {
-          ...tokens,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          user: {
-            id: dbUser.id,
-            keycloakSub: kcSub,
-            email: dbUser.email,
-          },
+    const tokens = await mintTokenPair(buildClaims(dbUser, false));
+    return {
+      statusCode: 200,
+      body: {
+        ...tokens,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token,
+        user: {
+          id: dbUser.id,
+          keycloakSub: localSub,
+          email: dbUser.email,
         },
-      };
-    } catch (tokenErr: any) {
-      request.log.error({ err: tokenErr }, 'Failed to issue tokens after registration');
-      return {
-        statusCode: 200,
-        body: { id: dbUser.id, keycloakSub: kcSub, email: dbUser.email },
-      };
-    }
+      },
+    };
   } catch (error: any) {
     const detail = error?.response?.data || error?.message || 'Unknown error';
     request.log.error({ err: error, detail }, 'Registration failed');
