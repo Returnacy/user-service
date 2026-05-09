@@ -1,5 +1,5 @@
 import fp from 'fastify-plugin';
-import { createRemoteJWKSet, importSPKI, jwtVerify, decodeJwt, type CryptoKey } from 'jose';
+import { importSPKI, jwtVerify, decodeJwt, type CryptoKey } from 'jose';
 import type { JWTVerifyOptions } from 'jose';
 
 export default fp(async (fastify) => {
@@ -16,42 +16,20 @@ export default fp(async (fastify) => {
     });
     return;
   }
-  const KEYCLOAK_BASE_URL = process.env.KEYCLOAK_BASE_URL;
-  const REALM = process.env.KEYCLOAK_REALM;
-  if (!KEYCLOAK_BASE_URL || !REALM) {
-    fastify.log.error('Missing KEYCLOAK_BASE_URL or KEYCLOAK_REALM env vars');
-    throw new Error('Keycloak configuration missing');
-  }
 
-  const jwksUrl = `${KEYCLOAK_BASE_URL}/realms/${REALM}/protocol/openid-connect/certs`;
-  const KEYCLOAK_JWKS = createRemoteJWKSet(new URL(jwksUrl));
-
-  // Phase 2.6 — also trust tokens we issue ourselves (same shape as consumer
-  // services' dual-issuer plugin). When JWT_ISSUER and JWT_PUBLIC_KEY are set,
-  // self-issued tokens are verified against the local public key directly.
+  // Phase 2.6 single-issuer cutover: only accept tokens we issue ourselves.
+  // The previous dual-issuer mode lazily fetched Keycloak JWKS, which hangs
+  // for ~30s when auth-service is offline (TCP timeout on a now-unresolvable
+  // hostname). Single-issuer mode does no outbound HTTP and fast-rejects any
+  // token that wasn't minted by user-service.
   const SELF_ISSUER = process.env.JWT_ISSUER?.trim();
   const SELF_PUBLIC_KEY_PEM = process.env.JWT_PUBLIC_KEY?.trim();
-  let SELF_KEY: CryptoKey | null = null;
-  if (SELF_ISSUER && SELF_PUBLIC_KEY_PEM) {
-    try {
-      SELF_KEY = (await importSPKI(SELF_PUBLIC_KEY_PEM, 'RS256')) as CryptoKey;
-      fastify.log.info({ SELF_ISSUER }, '[user-service] Dual-issuer mode: also accepting self-issued tokens');
-    } catch (e) {
-      fastify.log.error({ err: e }, '[user-service] Failed to import JWT_PUBLIC_KEY for self-verification');
-    }
+  if (!SELF_ISSUER || !SELF_PUBLIC_KEY_PEM) {
+    fastify.log.error('Missing JWT_ISSUER or JWT_PUBLIC_KEY env vars — single-issuer auth requires both');
+    throw new Error('Self-issued JWT configuration missing');
   }
-
-  const configuredIssuersEnv = process.env.KEYCLOAK_ISSUER;
-  const baseIssuers: string[] = configuredIssuersEnv
-    ? configuredIssuersEnv.split(',').map(s => s.trim())
-    : [
-        `${KEYCLOAK_BASE_URL}/realms/${REALM}`,
-        'http://localhost:8080/realms/' + REALM,
-        'http://keycloak:8080/realms/' + REALM
-      ];
-  const validIssuers: string[] = SELF_KEY && SELF_ISSUER
-    ? [...baseIssuers, SELF_ISSUER]
-    : baseIssuers;
+  const SELF_KEY = (await importSPKI(SELF_PUBLIC_KEY_PEM, 'RS256')) as CryptoKey;
+  fastify.log.info({ SELF_ISSUER }, '[user-service] Single-issuer mode: only accepting self-issued tokens');
 
   const audienceEnv = process.env.KEYCLOAK_AUDIENCE || process.env.KEYCLOAK_ALLOWED_AUDIENCES || '';
   const allowedAudiences = audienceEnv.split(',').map(s => s.trim()).filter(Boolean);
@@ -89,15 +67,16 @@ export default fp(async (fastify) => {
         } catch {}
       }
 
+      // Fast reject: if iss isn't ours, don't even try to verify. This is the
+      // critical guard that prevents hanging on the legacy KEYCLOAK_JWKS fetch.
       let tokenIss: string | undefined;
       try { tokenIss = decodeJwt(token).iss; } catch {}
+      if (!tokenIss || tokenIss !== SELF_ISSUER) {
+        return reply.status(401).send({ error: 'INVALID_OR_LEGACY_TOKEN' });
+      }
 
-      const verifyOptions: any = { issuer: validIssuers, clockTolerance: CLOCK_TOLERANCE_SECONDS } as JWTVerifyOptions;
-
-      const useSelfKey = SELF_KEY && tokenIss && tokenIss === SELF_ISSUER;
-      const { payload } = useSelfKey
-        ? await jwtVerify(token, SELF_KEY!, verifyOptions)
-        : await jwtVerify(token, KEYCLOAK_JWKS, verifyOptions);
+      const verifyOptions: JWTVerifyOptions = { issuer: SELF_ISSUER, clockTolerance: CLOCK_TOLERANCE_SECONDS };
+      const { payload } = await jwtVerify(token, SELF_KEY, verifyOptions);
 
       if (allowedAudiences.length > 0) {
         const audClaim = payload.aud;
