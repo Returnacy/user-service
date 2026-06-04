@@ -60,6 +60,18 @@ function buildClaims(user: { keycloakSub: string; email: string; name?: string |
   return claims;
 }
 
+// Fallback tenant used when domain-mapper cannot resolve the request to a
+// (businessId, brandId). Single-tenant deployment: set DEFAULT_BUSINESS_ID /
+// DEFAULT_BRAND_ID to the live tenant's IDs so a transient domain-mapper
+// failure can never silently create a membership-less (orphan) user.
+// MUST be revisited before onboarding a second tenant.
+function defaultMembershipTarget(): { businessId: string | null; brandId: string | null } | null {
+  const businessId = process.env.DEFAULT_BUSINESS_ID || null;
+  const brandId = process.env.DEFAULT_BRAND_ID || null;
+  if (!businessId && !brandId) return null;
+  return { businessId, brandId };
+}
+
 export async function postRegisterService(request: FastifyRequest): Promise<ServiceResponse<RegisterResponse>> {
   try {
     const DEBUG = process.env.DEBUG_MEMBERSHIP === '1';
@@ -212,26 +224,60 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     const localSub = crypto.randomUUID();
     const localPasswordHash = await bcrypt.hash(loginPassword, 10);
 
-    const dbUser = await repository.upsertUserByKeycloakSub(localSub, {
-      email: registerData.email,
-      name: registerData.name,
-      surname: registerData.surname,
-      birthday: registerData.birthday,
-      gender: registerData.gender ?? null,
-      userTermsAcceptance: registerData.acceptTermsOfService,
-      userPrivacyPolicyAcceptance: registerData.acceptPrivacyPolicy,
-      googleSub: googleSub ?? undefined,
-      passwordHash: localPasswordHash,
-      passwordAlgorithm: 'bcrypt',
-      passwordUpdatedAt: new Date(),
-    });
+    // Determine the tenant membership to enrol the new user into. Prefer the
+    // domain-mapper resolution; fall back to the configured default tenant when
+    // resolution failed or returned an empty (businessId/brandId-less) object.
+    // The guard matches the existing-user path so a resolved-but-empty domain
+    // cannot slip through and throw BUSINESS_OR_BRAND_REQUIRED.
+    const resolvedTarget = (domain && (domain.businessId || domain.brandId))
+      ? { businessId: domain.businessId, brandId: domain.brandId }
+      : null;
+    const membershipTarget = resolvedTarget ?? defaultMembershipTarget();
 
-    if (domain) {
-      dbg({ domain }, 'Upserting local membership derived from domain');
-      await repository.upsertMembership(dbUser.id, { businessId: domain.businessId, brandId: domain.brandId, role: 'USER' });
-    } else {
-      dbg({}, 'No domain-derived membership available; skipping local membership upsert');
+    if (!membershipTarget) {
+      // No domain resolution AND no configured fallback. Refuse rather than
+      // creating an orphan user behind a 200. Loud (error-level) so monitoring
+      // catches it instead of it failing silently.
+      request.log.error(
+        { host, xfh, origin, referer, originHost, refererHost },
+        'Registration aborted: no membership target (domain unresolved and DEFAULT_BUSINESS_ID/DEFAULT_BRAND_ID not set)'
+      );
+      return {
+        statusCode: 503,
+        body: {
+          error: 'REGISTRATION_UNAVAILABLE',
+          message: 'Registrazione temporaneamente non disponibile. Riprova tra poco.',
+        },
+      };
     }
+
+    if (!resolvedTarget) {
+      request.log.warn(
+        { host, xfh, origin, referer, membershipTarget },
+        'Domain resolution returned no tenant; using configured default membership target'
+      );
+    }
+
+    // Atomic: the User row and its tenant membership are created together, or
+    // neither is. This removes the orphan-user failure class entirely.
+    const dbUser = await repository.createUserWithMembership(
+      localSub,
+      {
+        email: registerData.email,
+        name: registerData.name,
+        surname: registerData.surname,
+        birthday: registerData.birthday,
+        gender: registerData.gender ?? null,
+        userTermsAcceptance: registerData.acceptTermsOfService,
+        userPrivacyPolicyAcceptance: registerData.acceptPrivacyPolicy,
+        googleSub: googleSub ?? undefined,
+        passwordHash: localPasswordHash,
+        passwordAlgorithm: 'bcrypt',
+        passwordUpdatedAt: new Date(),
+      },
+      { businessId: membershipTarget.businessId, brandId: membershipTarget.brandId, role: 'USER' }
+    );
+    dbg({ membershipTarget, userId: dbUser.id }, 'Created user with membership (atomic)');
 
     const ip = (request.headers['x-forwarded-for'] as string) || request.ip;
     const ua = request.headers['user-agent'] as string | undefined;

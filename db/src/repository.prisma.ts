@@ -93,6 +93,51 @@ export class RepositoryPrisma {
     });
   }
 
+  // Create a brand-new user and its tenant membership atomically: both rows
+  // commit together or neither does. Eliminates the orphan-user class (a User
+  // with no UserMembership is invisible to the CRM and cannot be stamped).
+  // `sub` must be a fresh keycloakSub (new-user registration path).
+  async createUserWithMembership(
+    sub: string,
+    data: Partial<User>,
+    membership: { businessId?: string | null; brandId?: string | null; role?: UserRole },
+  ): Promise<User> {
+    const businessId = membership.businessId ?? null;
+    const brandId = membership.brandId ?? null;
+    if (!businessId && !brandId) {
+      throw Object.assign(new Error('BUSINESS_OR_BRAND_REQUIRED'), { code: 'BUSINESS_OR_BRAND_REQUIRED' });
+    }
+    return prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          keycloakSub: sub,
+          email: data.email || '',
+          phone: data.phone || '',
+          name: data.name || '',
+          surname: data.surname || '',
+          birthday: data.birthday || '',
+          gender: data.gender || null,
+          preferences: (data as any).preferences ?? {},
+          googleSub: (data as any).googleSub ?? null,
+          userPrivacyPolicyAcceptance: data.userPrivacyPolicyAcceptance ?? false,
+          userTermsAcceptance: data.userTermsAcceptance ?? false,
+          passwordHash: (data as any).passwordHash ?? null,
+          passwordAlgorithm: (data as any).passwordAlgorithm ?? null,
+          passwordUpdatedAt: (data as any).passwordUpdatedAt ?? null,
+        } as any,
+      });
+      await tx.userMembership.create({
+        data: {
+          userId: user.id,
+          businessId: businessId as any,
+          brandId,
+          role: membership.role ?? 'USER',
+        } as any,
+      });
+      return user;
+    });
+  }
+
   // Memberships
   async addMembership(userId: string, membership: { businessId?: string | null; brandId?: string | null; role?: UserRole }): Promise<UserMembership> {
     const businessId = membership.businessId ?? null;

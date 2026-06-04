@@ -17,6 +17,14 @@ export type DomainMapperBusinessEntry = {
 };
 
 const DEFAULT_CACHE_MS = Number(process.env.DOMAIN_MAPPER_CACHE_MS || 60_000);
+// A genuinely-unmapped host (null result) is cached only briefly so that a
+// misconfig/outage window self-heals quickly once fixed, instead of being
+// pinned for the full positive TTL.
+const NEG_CACHE_MS = Number(process.env.DOMAIN_MAPPER_NEG_CACHE_MS || 5_000);
+const REQUEST_TIMEOUT_MS = Number(process.env.DOMAIN_MAPPER_TIMEOUT_MS || 3_000);
+const RESOLVE_RETRIES = Number(process.env.DOMAIN_MAPPER_RETRIES || 2);
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const hostCache = new Map<string, { expiresAt: number; value: DomainResolution | null }>();
 const businessUrlCache = new Map<string, { expiresAt: number; value: string | null }>();
@@ -65,7 +73,7 @@ async function mapperGet<T = any>(path: string, config: AxiosRequestConfig = {})
   const base = ensureMapperUrl();
   const headers = await getServiceHeaders();
   const mergedHeaders = { ...(config.headers ?? {}), ...headers };
-  const response = await axios.get<T>(`${base}${path}`, { ...config, headers: mergedHeaders });
+  const response = await axios.get<T>(`${base}${path}`, { ...config, headers: mergedHeaders, timeout: config.timeout ?? REQUEST_TIMEOUT_MS });
   return response.data;
 }
 
@@ -74,7 +82,24 @@ export async function fetchDomainInfoByHost(host: string): Promise<DomainResolut
   if (!normalized) return null;
   const cached = hostCache.get(normalized);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const data = await mapperGet<any>(`/api/v1/resolve`, { params: { host } });
+
+  // Retry transient failures (cold starts, networking blips) before giving up.
+  // A thrown error is NOT cached — only a real response populates the cache, so
+  // a transient blip can never blackhole a host for the cache TTL.
+  let data: any;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= RESOLVE_RETRIES; attempt++) {
+    try {
+      data = await mapperGet<any>(`/api/v1/resolve`, { params: { host } });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < RESOLVE_RETRIES) await sleep(150 * (attempt + 1));
+    }
+  }
+  if (lastErr) throw lastErr;
+
   const result: DomainResolution | null = data && typeof data === 'object'
     ? {
         brandId: data.brandId ?? null,
@@ -85,7 +110,9 @@ export async function fetchDomainInfoByHost(host: string): Promise<DomainResolut
         url: data.url ?? null,
       }
     : null;
-  hostCache.set(normalized, { expiresAt: Date.now() + DEFAULT_CACHE_MS, value: result });
+  // Positive results cache for the full TTL; a null (unmapped host) caches only
+  // briefly so a misconfig window self-heals fast once corrected.
+  hostCache.set(normalized, { expiresAt: Date.now() + (result ? DEFAULT_CACHE_MS : NEG_CACHE_MS), value: result });
   return result;
 }
 
