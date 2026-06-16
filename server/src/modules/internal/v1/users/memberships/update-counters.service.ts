@@ -20,7 +20,10 @@ export async function updateMembershipCountersService(request: FastifyRequest): 
   const { userId } = (request.params as any) as { userId: string };
   const body = request.body as any;
   const businessId = String(body?.businessId ?? '');
-  if (!userId || !businessId) {
+  const brandId = body?.brandId ? String(body.brandId) : '';
+  const scope = String(body?.scope ?? 'LOCATION');
+  // Need at least one way to locate the membership.
+  if (!userId || (!businessId && !brandId)) {
     return { statusCode: 400, body: { error: 'INVALID_INPUT' } };
   }
 
@@ -32,6 +35,15 @@ export async function updateMembershipCountersService(request: FastifyRequest): 
   };
 
   const repository = (request.server as any).repository as any;
-  const updated = await repository.setMembershipCounters(userId, businessId, counters);
+  // Under a BRAND wallet the counters live on the single brand-scoped membership
+  // (the per-location membershipId may not exist for the location being stamped),
+  // so resolve by brand. Otherwise resolve by the specific location.
+  const membership = (scope === 'BRAND' && brandId)
+    ? await repository.getMembershipByBrand(userId, brandId)
+    : await repository.getMembership(userId, businessId);
+  if (!membership) {
+    return { statusCode: 404, body: { error: 'MEMBERSHIP_NOT_FOUND' } };
+  }
+  const updated = await repository.applyMembershipCounters(membership, counters);
   return { statusCode: 200, body: { membership: updated } };
 }

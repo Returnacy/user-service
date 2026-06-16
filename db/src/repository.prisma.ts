@@ -256,11 +256,8 @@ export class RepositoryPrisma {
     }) as any;
   }
 
-  async setMembershipCounters(userId: string, businessId: string, counters: { validStamps?: number; validCoupons?: number; totalStampsDelta?: number; totalCouponsDelta?: number }) {
-    const existing = await this.getMembership(userId, businessId);
-    if (!existing) {
-      throw Object.assign(new Error('MEMBERSHIP_NOT_FOUND'), { code: 'MEMBERSHIP_NOT_FOUND' });
-    }
+  // Apply counters onto an already-resolved membership row.
+  async applyMembershipCounters(existing: UserMembership, counters: { validStamps?: number; validCoupons?: number; totalStampsDelta?: number; totalCouponsDelta?: number }) {
     const nextValidStamps = counters.validStamps ?? existing.validStamps;
     const nextValidCoupons = existing.validCoupons + (counters.validCoupons ?? 0);
     const nextTotalStamps = existing.totalStamps + (counters.totalStampsDelta ?? 0);
@@ -274,6 +271,14 @@ export class RepositoryPrisma {
         totalCoupons: nextTotalCoupons,
       },
     });
+  }
+
+  async setMembershipCounters(userId: string, businessId: string, counters: { validStamps?: number; validCoupons?: number; totalStampsDelta?: number; totalCouponsDelta?: number }) {
+    const existing = await this.getMembership(userId, businessId);
+    if (!existing) {
+      throw Object.assign(new Error('MEMBERSHIP_NOT_FOUND'), { code: 'MEMBERSHIP_NOT_FOUND' });
+    }
+    return this.applyMembershipCounters(existing, counters);
   }
 
   // Targeting: fetch candidate users (later add business/brand scope filters)
