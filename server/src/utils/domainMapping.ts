@@ -127,6 +127,35 @@ export async function resolveDomain(host?: string | null): Promise<DomainResolut
   }
 }
 
+// Resolve the brand/business context from the four candidate host sources a
+// browser request can carry (host, x-forwarded-host, origin, referer), mirroring
+// the resolution used in post.login.service / post.register.service. Returns the
+// first source that resolves to a mapped domain, or null.
+export async function resolveDomainFromRequest(
+  headers: Record<string, string | string[] | undefined>,
+): Promise<DomainResolution | null> {
+  const readHeader = (name: string): string | undefined => {
+    const value = headers[name];
+    if (Array.isArray(value)) return value[0];
+    return value ?? undefined;
+  };
+  const xfh = readHeader('x-forwarded-host');
+  const host = readHeader('host');
+  const origin = readHeader('origin');
+  const referer = readHeader('referer');
+  let originHost = '';
+  try { if (origin) originHost = new URL(origin).host; } catch {}
+  let refererHost = '';
+  try { if (referer) refererHost = new URL(referer).host; } catch {}
+  const [fromHost, fromXfh, fromOrigin, fromReferer] = await Promise.all([
+    host ? resolveDomain(host) : Promise.resolve(null),
+    xfh ? resolveDomain(xfh) : Promise.resolve(null),
+    originHost ? resolveDomain(originHost) : Promise.resolve(null),
+    refererHost ? resolveDomain(refererHost) : Promise.resolve(null),
+  ]);
+  return fromHost || fromXfh || fromOrigin || fromReferer;
+}
+
 export async function fetchDomainBusinesses(forceRefresh = false): Promise<DomainMapperBusinessEntry[]> {
   const now = Date.now();
   if (!forceRefresh && businessesCache && businessesCache.expiresAt > now) {

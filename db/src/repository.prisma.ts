@@ -226,6 +226,35 @@ export class RepositoryPrisma {
     return prisma.userMembership.findFirst({ where: { userId, brandId } });
   }
 
+  // Team management: every membership in a brand whose role is not USER,
+  // joined with the owning user. Ordering is applied in the service layer.
+  async listBrandTeamMembers(brandId: string): Promise<Array<UserMembership & { user: User }>> {
+    return prisma.userMembership.findMany({
+      where: { brandId, role: { not: 'USER' } },
+      include: { user: true },
+    }) as any;
+  }
+
+  // Team management: promotion candidates — users who hold a plain USER
+  // membership in the brand and match the query on email/name/surname.
+  async searchBrandUserCandidates(brandId: string, query: string, limit: number): Promise<Array<UserMembership & { user: User }>> {
+    return prisma.userMembership.findMany({
+      where: {
+        brandId,
+        role: 'USER',
+        user: {
+          OR: [
+            { email: { contains: query, mode: 'insensitive' } },
+            { name: { contains: query, mode: 'insensitive' } },
+            { surname: { contains: query, mode: 'insensitive' } },
+          ],
+        },
+      },
+      include: { user: true },
+      take: limit,
+    }) as any;
+  }
+
   async getMembershipWithWalletPass(userId: string, businessId: string): Promise<(UserMembership & { walletPass: WalletPassRecord | null }) | null> {
     return prisma.userMembership.findUnique({
       where: { userId_businessId: { userId, businessId } } as any,

@@ -10,6 +10,7 @@ import userAuthPlugin from './plugins/userAuthPlugin.js';
 import { healthRoute } from './modules/health/health.route.js';
 import { authRoute } from './modules/api/v1/auth/auth.route.js';
 import { meRoute } from './modules/api/v1/me/me.route.js';
+import { teamRoute } from './modules/api/v1/team/team.route.js';
 import { usersRoute } from './modules/api/v1/users/users.route.js';
 import { internalUsersRoute } from './modules/internal/v1/users/users.route.js';
 import { internalAuthRoute } from './modules/internal/v1/auth/auth.route.js';
@@ -196,6 +197,7 @@ export async function buildServer(opts?: { overrides?: Overrides }) {
   await server.register(jwksRoute);
   await server.register(authRoute, { prefix: '/api/v1/auth' });
   await server.register(meRoute, { prefix: '/api/v1/me' });
+  await server.register(teamRoute, { prefix: '/api/v1/team' });
   await server.register(usersRoute, { prefix: '/api/v1/users' });
   await server.register(internalUsersRoute, { prefix: '/internal/v1/users' });
   await server.register(internalAuthRoute, { prefix: '/internal/v1/auth' });

@@ -9,6 +9,7 @@ import { postGoogleRedirectHandler } from './post.googleRedirect.controller.js';
 import { postVerifyEmailHandler } from './post.verifyEmail.controller.js';
 import { postVerifyEmailConfirmHandler } from './post.verifyEmailConfirm.controller.js';
 import { postResetPasswordHandler } from './post.resetPassword.controller.js';
+import { postPmHandoffHandler } from './post.pmHandoff.controller.js';
 
 export async function authRoute(server: FastifyInstance) {
   server.post('/register', { handler: postRegisterHandler });
@@ -30,4 +31,5 @@ export async function authRoute(server: FastifyInstance) {
   server.post('/verify-email/confirm', { handler: postVerifyEmailConfirmHandler });
   server.post('/forgot-password', { handler: postForgotPasswordHandler });
   server.post('/reset-password', { handler: postResetPasswordHandler });
+  server.post('/pm-handoff', { handler: postPmHandoffHandler });
 }

@@ -81,6 +81,10 @@ export type AccessTokenClaims = {
 export type AccessTokenOptions = {
   audience?: string | string[];
   ttlSeconds?: number;
+  // Extra non-standard claims to embed (e.g. membershipRole for the
+  // pizzeria-manager SSO handoff). Merged first so the standard OIDC claims
+  // below always win on a key collision.
+  extraClaims?: Record<string, unknown>;
 };
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 300;
@@ -96,6 +100,7 @@ export async function signAccessToken(
   const audience = options.audience ?? 'frontend-spa';
 
   const payload: JWTPayload = {
+    ...(options.extraClaims ?? {}),
     email: claims.email,
     email_verified: claims.email_verified,
     preferred_username: claims.preferred_username,
