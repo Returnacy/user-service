@@ -4,7 +4,7 @@ import axios from 'axios';
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { resolveBusinessServiceUrl, resolveDomain } from '@/utils/domainMapping.js';
 import { parseTokenMemberships } from '@/utils/memberships.js';
-import { getBrandCaller } from '@/utils/tenantGuard.js';
+import { getBrandCaller, getBrandBusinessIds, membershipBelongsToBrand } from '@/utils/tenantGuard.js';
 
 type UserResponse = Record<string, unknown>;
 
@@ -36,8 +36,13 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
     // any other brand leaks into the payload.
     const caller = getBrandCaller(request);
     const callerBrandId = caller?.brandId ?? null;
+    // Same in-tenant rule as business-service and as requireBrandRole: brandId,
+    // or a businessId belonging to the brand for rows that carry no brandId.
+    // Matching on brandId alone made a legacy-row customer a 404 to the very
+    // staff member who had just stamped them.
+    const brandBusinessIds = callerBrandId ? await getBrandBusinessIds(request, callerBrandId) : [];
     const memberships = callerBrandId
-      ? allMemberships.filter((m: any) => (m.brandId ?? null) === callerBrandId)
+      ? allMemberships.filter((m: any) => membershipBelongsToBrand(m, callerBrandId, brandBusinessIds))
       : allMemberships;
 
     // 404, not 403: whether a given user exists in *another* brand is itself

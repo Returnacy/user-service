@@ -244,6 +244,25 @@ export class RepositoryPrisma {
     return row?.brandId ?? null;
   }
 
+  /**
+   * The locations known to belong to a brand, derived from the membership rows
+   * that name both keys.
+   *
+   * Needed because a share of the rows carry a businessId with a NULL brandId
+   * (they predate brand-scoped membership). business-service already treats
+   * those as in-tenant by matching the businessId against the brand's location
+   * set; user-service has to use the same rule or the two disagree about who
+   * belongs to a brand — staff who can stamp but cannot open the customer.
+   */
+  async listBusinessIdsForBrand(brandId: string): Promise<string[]> {
+    const rows = await prisma.userMembership.findMany({
+      where: { brandId, businessId: { not: null } },
+      select: { businessId: true },
+      distinct: ['businessId'],
+    });
+    return rows.map((r) => r.businessId).filter((id): id is string => typeof id === 'string');
+  }
+
   // Team management: every membership in a brand whose role is not USER,
   // joined with the owning user. Ordering is applied in the service layer.
   async listBrandTeamMembers(brandId: string): Promise<Array<UserMembership & { user: User }>> {

@@ -31,6 +31,18 @@ export type ServiceIdentity = {
 export type TenantDenial = { statusCode: number; body: { error: string; message?: string } };
 
 /**
+ * Client ids already reported as tenant-blind in this process. Keeps the
+ * rotation-window warning to one line per credential instead of one per
+ * request; see requireServiceForTenant.
+ */
+const warnedLegacyClients = new Set<string>();
+
+/** Test-only: forget what has been warned about. */
+export function _resetLegacyWarnings(): void {
+  warnedLegacyClients.clear();
+}
+
+/**
  * Service client ids are matched on the segment before ':' as well as in full,
  * so per-tenant ids ("business-service:chepizza") are recognised without having
  * to restate every tenant in KEYCLOAK_SERVICE_AUDIENCE.
@@ -157,12 +169,21 @@ export function requireServiceForTenant(
         response: { statusCode: 403, body: { error: 'TENANT_BLIND_SERVICE_TOKEN' } },
       };
     }
-    // Rotation window: the legacy credential still works, but every use is
-    // logged so the cutover can be verified from traffic instead of hope.
-    request.log?.warn(
-      { clientId: identity.clientId, targetBrandId, path: request.url },
-      '[tenant] tenant-blind service token accepted during rotation window',
-    );
+    // Rotation window: the legacy credential still works, and its use is
+    // logged so the cutover can be verified from traffic rather than hope.
+    //
+    // Once per client id per process, not per call: business-service syncs
+    // counters on every stamp, so a per-call warn would put a line in the log
+    // for every stamp of every customer — which drowns the signal it exists to
+    // give. Presence is what matters here, not volume; a process restart
+    // re-arms it. Refusals below are NOT deduped.
+    if (!warnedLegacyClients.has(identity.clientId)) {
+      warnedLegacyClients.add(identity.clientId);
+      request.log?.warn(
+        { clientId: identity.clientId, targetBrandId, path: request.url },
+        '[tenant] tenant-blind service token accepted during rotation window (logged once per client id per process)',
+      );
+    }
     return { ok: true, identity };
   }
 
@@ -205,6 +226,57 @@ export type BrandCaller = {
   userId: string;
   role: string;
 };
+
+/**
+ * The locations belonging to a brand, as far as user-service can tell.
+ *
+ * Sources, in order: the membership rows that name both keys (authoritative for
+ * any location with at least one member, including Che Pizza's Lissaro, which
+ * is absent from domain-mapping.json), then the domain-mapper entries for a
+ * freshly provisioned location nobody is a member of yet.
+ */
+export async function getBrandBusinessIds(
+  request: FastifyRequest,
+  brandId: string,
+): Promise<string[]> {
+  const ids = new Set<string>();
+  const repository = (request.server as any).repository as any;
+  if (typeof repository?.listBusinessIdsForBrand === 'function') {
+    try {
+      for (const id of await repository.listBusinessIdsForBrand(brandId)) ids.add(id);
+    } catch {
+      // fall through to the mapper
+    }
+  }
+  try {
+    for (const entry of await fetchDomainBusinesses()) {
+      if (entry.brandId === brandId && entry.businessId) ids.add(entry.businessId);
+    }
+  } catch {
+    // mapper unavailable — the membership-derived set stands on its own
+  }
+  return Array.from(ids);
+}
+
+/**
+ * Does this membership belong to `brandId`?
+ *
+ * Mirrors business-service's membershipInTenant exactly, and must keep doing
+ * so. A share of the rows carry a businessId with a NULL brandId; when the two
+ * services disagreed about those, the same person could stamp a customer
+ * (business-service said yes) and then get a 403 opening that customer's record
+ * (user-service said no).
+ */
+export function membershipBelongsToBrand(
+  membership: { brandId?: string | null; businessId?: string | null } | null | undefined,
+  brandId: string,
+  brandBusinessIds: string[],
+): boolean {
+  if (!membership) return false;
+  if (membership.brandId && membership.brandId === brandId) return true;
+  if (membership.businessId && brandBusinessIds.includes(membership.businessId)) return true;
+  return false;
+}
 
 /**
  * Roles that count as "works here", ordered loosely by power. USER is
@@ -262,7 +334,15 @@ export function requireBrandRole(roles: ReadonlySet<string> = BRAND_STAFF_ROLES)
       return reply.status(403).send({ error: 'FORBIDDEN' });
     }
 
-    const membership = await repository.getMembershipByBrand(caller.id, brandId);
+    // Not getMembershipByBrand(): that matches on brandId alone and misses the
+    // rows carrying only a businessId. business-service admits those, so
+    // matching them here too is what keeps the two services agreeing on who
+    // belongs to a brand.
+    const brandBusinessIds = await getBrandBusinessIds(request, brandId);
+    const memberships = await repository.listMemberships(caller.id);
+    const membership = (Array.isArray(memberships) ? memberships : [])
+      .find((m: any) => membershipBelongsToBrand(m, brandId, brandBusinessIds));
+
     const role = membership?.role ? String(membership.role).toUpperCase() : null;
     if (!role || !roles.has(role)) {
       request.log?.info(

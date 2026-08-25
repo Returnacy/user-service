@@ -17,6 +17,7 @@ import {
   fetchDomainBusinesses,
   resolveBusinessServiceUrl,
 } from '@/utils/domainMapping.js';
+import { _resetLegacyWarnings, requireServiceForTenant } from '@/utils/tenantGuard.js';
 import { buildServer } from '../src/appBuilder.js';
 
 const BRAND_A = 'brand-a-chepizza';
@@ -35,6 +36,9 @@ function createRepo() {
     { id: 'u-cust-a', keycloakSub: 'sub-cust-a', email: 'cust-a@x.com', name: 'Carlo', surname: 'A' },
     { id: 'u-staff-b', keycloakSub: 'sub-staff-b', email: 'staff-b@x.com', name: 'Bruno', surname: 'B' },
     { id: 'u-cust-b', keycloakSub: 'sub-cust-b', email: 'cust-b@x.com', name: 'Bea', surname: 'B' },
+    // Legacy shape: membership rows carrying a businessId with no brandId.
+    { id: 'u-legacy-staff', keycloakSub: 'sub-legacy-staff', email: 'legacy-staff@x.com', name: 'Lino', surname: 'Legacy' },
+    { id: 'u-legacy-cust', keycloakSub: 'sub-legacy-cust', email: 'legacy@x.com', name: 'Lea', surname: 'Legacy' },
   ];
   const memberships: Membership[] = [
     { userId: 'u-staff-a', brandId: BRAND_A, businessId: BIZ_A, role: 'STAFF' },
@@ -57,6 +61,11 @@ function createRepo() {
     },
     async findBrandIdByBusinessId(businessId: string) {
       return memberships.find((m) => m.businessId === businessId && m.brandId)?.brandId ?? null;
+    },
+    async listBusinessIdsForBrand(brandId: string) {
+      return Array.from(new Set(
+        memberships.filter((m) => m.brandId === brandId && m.businessId).map((m) => m.businessId as string),
+      ));
     },
     async upsertMembership(userId: string, m: any) {
       const existing = memberships.find((x) => x.userId === userId && x.brandId === (m.brandId ?? null));
@@ -100,6 +109,7 @@ describe('cross-tenant isolation', () => {
   });
 
   beforeEach(() => {
+    _resetLegacyWarnings();
     delete process.env.REQUIRE_TENANT_SERVICE_TOKENS;
     delete process.env.PLATFORM_ADMIN_SUBS;
     vi.mocked(fetchDomainBusinesses).mockResolvedValue([
@@ -202,6 +212,43 @@ describe('cross-tenant isolation', () => {
       expect(res.statusCode).toBe(200);
     });
 
+    // business-service syncs counters on every stamp, so a per-call warn puts a
+    // line in the log for every stamp of every customer. The rotation runbook
+    // says "watch until this warning stops"; at that volume nobody can.
+    // Exercised directly on the guard: Fastify hands each request its own child
+    // logger, so spying on server.log would see nothing.
+    it('warns once per client id per process, not per call', () => {
+      _resetLegacyWarnings();
+      const lines: string[] = [];
+      const req = (clientId: string) => ({
+        url: '/internal/v1/users/query',
+        log: { warn: (_o: any, msg?: any) => lines.push(String(msg ?? '')) },
+        auth: { azp: clientId, sub: clientId },
+        server: { repository: repo },
+      }) as any;
+
+      for (let i = 0; i < 5; i++) requireServiceForTenant(req('business-service'), BRAND_A);
+      expect(lines.filter((l) => l.includes('rotation window')).length).toBe(1);
+
+      // A different credential is its own signal and still gets one line.
+      requireServiceForTenant(req('campaign-service'), BRAND_A);
+      expect(lines.filter((l) => l.includes('rotation window')).length).toBe(2);
+    });
+
+    it('always logs a refusal, never deduped', () => {
+      _resetLegacyWarnings();
+      const lines: string[] = [];
+      const req = {
+        url: '/internal/v1/users/query',
+        log: { warn: (_o: any, msg?: any) => lines.push(String(msg ?? '')) },
+        auth: { azp: 'business-service:brand-b', sub: 'business-service:brand-b', brandId: BRAND_B },
+        server: { repository: repo },
+      } as any;
+
+      for (let i = 0; i < 3; i++) requireServiceForTenant(req, BRAND_A);
+      expect(lines.filter((l) => l.includes('cross-tenant service call refused')).length).toBe(3);
+    });
+
     it('are refused once REQUIRE_TENANT_SERVICE_TOKENS=true', async () => {
       process.env.REQUIRE_TENANT_SERVICE_TOKENS = 'true';
       const res = await server.inject({
@@ -266,6 +313,37 @@ describe('cross-tenant isolation', () => {
       process.env.PLATFORM_ADMIN_SUBS = 'sub-cust-a,sub-someone-else';
       const res = await getUser('u-cust-a', { host: HOST_A, 'x-test-sub': 'sub-cust-a' });
       expect(res.statusCode).toBe(200);
+    });
+
+    // Legacy rows: a businessId with a NULL brandId. business-service counts
+    // them as in-tenant (membershipInTenant matches the brand's location set),
+    // so user-service has to as well. While the two disagreed, a staff member
+    // could stamp a customer and then get 403 opening that customer's record,
+    // and a legacy-row customer was simply a 404 to their own pizzeria.
+    describe('memberships carrying only a businessId', () => {
+      it('admits staff whose row has a NULL brandId but a location of the brand', async () => {
+        repo._memberships.push({ userId: 'u-legacy-staff', brandId: null, businessId: BIZ_A, role: 'STAFF' });
+        const res = await getUser('u-cust-a', { host: HOST_A, 'x-test-sub': 'sub-legacy-staff' });
+        expect(res.statusCode).toBe(200);
+        repo._memberships.pop();
+      });
+
+      it('finds a customer whose only row has a NULL brandId', async () => {
+        repo._memberships.push({ userId: 'u-legacy-cust', brandId: null, businessId: BIZ_A, role: 'USER' });
+        const res = await getUser('u-legacy-cust', { host: HOST_A, 'x-test-sub': 'sub-staff-a' });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().email).toBe('legacy@x.com');
+        repo._memberships.pop();
+      });
+
+      it('does not admit a NULL-brand row pointing at another brand location', async () => {
+        // The fallback widens what counts as this brand; it must not dissolve
+        // the boundary.
+        repo._memberships.push({ userId: 'u-legacy-staff', brandId: null, businessId: BIZ_B, role: 'STAFF' });
+        const res = await getUser('u-cust-a', { host: HOST_A, 'x-test-sub': 'sub-legacy-staff' });
+        expect(res.statusCode).toBe(403);
+        repo._memberships.pop();
+      });
     });
   });
 
