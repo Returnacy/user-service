@@ -5,15 +5,21 @@ import { decodeJwt } from 'jose';
 // Domain resolution is network-bound; mock it so tests control the resolved brand.
 vi.mock('@/utils/domainMapping.js', () => ({
   resolveDomainFromRequest: vi.fn(),
+  fetchDomainBusinesses: vi.fn(),
 }));
 
-import { resolveDomainFromRequest } from '@/utils/domainMapping.js';
+import { resolveDomainFromRequest, fetchDomainBusinesses } from '@/utils/domainMapping.js';
 import { _resetSelfIssuedCache } from '@/utils/selfIssuedJwt.js';
 import { postPmHandoffService } from '@/modules/api/v1/auth/post.pmHandoff.service.js';
 
 const TEST_ISSUER = 'https://test.user-service.local';
 const TEST_KID = 'test-kid-pm-1';
 const BRAND = 'brand-1';
+// Mirrors the live shape: TAGGI is in domain-mapping.json, LISSARO is not — it
+// exists only as a membership row. That gap is what the omit rule is about.
+const TAGGI = 'biz-taggi';
+const LISSARO = 'biz-lissaro';
+const OTHER_BRAND_BIZ = 'biz-of-another-brand';
 
 let testPrivateKeyPem: string;
 let testPublicKeyPem: string;
@@ -28,7 +34,7 @@ beforeAll(() => {
   testPublicKeyPem = publicKey;
 });
 
-type Membership = { userId: string; brandId: string | null; role: string };
+type Membership = { userId: string; brandId: string | null; businessId: string | null; role: string };
 
 function createRepo() {
   const users = [
@@ -36,8 +42,8 @@ function createRepo() {
     { id: 'u-user', keycloakSub: 'sub-user', email: 'user@x.com', name: 'Ugo', surname: 'User' },
   ];
   const memberships: Membership[] = [
-    { userId: 'u-staff', brandId: BRAND, role: 'STAFF' },
-    { userId: 'u-user', brandId: BRAND, role: 'USER' },
+    { userId: 'u-staff', brandId: BRAND, businessId: TAGGI, role: 'STAFF' },
+    { userId: 'u-user', brandId: BRAND, businessId: TAGGI, role: 'USER' },
   ];
   return {
     async findUserByKeycloakSub(sub: string) { return users.find((u) => u.keycloakSub === sub) ?? null; },
@@ -47,10 +53,11 @@ function createRepo() {
   };
 }
 
-function makeRequest(opts: { sub?: string; repo: any }) {
+function makeRequest(opts: { sub?: string; repo: any; body?: any }) {
   return {
     auth: opts.sub ? { sub: opts.sub } : undefined,
     headers: {},
+    body: opts.body,
     server: { repository: opts.repo },
     log: { error: () => {}, warn: () => {}, info: () => {} },
   } as any;
@@ -66,6 +73,11 @@ beforeEach(() => {
   _resetSelfIssuedCache();
   repo = createRepo();
   (resolveDomainFromRequest as any).mockResolvedValue({ brandId: BRAND, businessId: null, host: null, service: null, label: null, url: null });
+  // Only TAGGI is mapped, as in production.
+  (fetchDomainBusinesses as any).mockResolvedValue([
+    { label: 'Taggi', brandId: BRAND, businessId: TAGGI, services: {} },
+    { label: 'Other', brandId: 'another-brand', businessId: OTHER_BRAND_BIZ, services: {} },
+  ]);
 });
 
 describe('POST /api/v1/auth/pm-handoff', () => {
@@ -102,5 +114,49 @@ describe('POST /api/v1/auth/pm-handoff', () => {
     expect(decoded.name).toBe('Sara Staff');
     expect(decoded.membershipRole).toBe('STAFF');
     expect(decoded.exp - decoded.iat).toBe(60);
+  });
+
+  // brandId is the claim PizzeriaManager checks in order to refuse another
+  // tenant's staff. Without it, every PM on this issuer accepted every tenant.
+  it('always carries the brandId resolved from the host', async () => {
+    const res = await postPmHandoffService(makeRequest({ sub: 'sub-staff', repo }));
+    expect((decodeJwt((res.body as any).token) as any).brandId).toBe(BRAND);
+  });
+
+  describe('businessId claim', () => {
+    // docs/SSO-PM-CONTRACT.md §4: an unverifiable location is OMITTED, never
+    // substituted. PM is specified to prefer the claim over the URL fragment,
+    // so asserting the wrong pizzeria is worse than asserting nothing —
+    // Lissaro staff would silently land on Taggi's chiusura.
+    it('omits the claim when the requested location cannot be tied to the brand', async () => {
+      const res = await postPmHandoffService(
+        makeRequest({ sub: 'sub-staff', repo, body: { businessId: LISSARO } }),
+      );
+      expect(res.statusCode).toBe(200);
+      const decoded = decodeJwt((res.body as any).token) as any;
+      expect(decoded.businessId).toBeUndefined();
+      // ...and in particular does not fall back to the membership's location.
+      expect(decoded.businessId).not.toBe(TAGGI);
+      expect(decoded.brandId).toBe(BRAND);
+    });
+
+    it('accepts a location proved by the caller own membership', async () => {
+      const res = await postPmHandoffService(
+        makeRequest({ sub: 'sub-staff', repo, body: { businessId: TAGGI } }),
+      );
+      expect((decodeJwt((res.body as any).token) as any).businessId).toBe(TAGGI);
+    });
+
+    it('never echoes a location belonging to another brand', async () => {
+      const res = await postPmHandoffService(
+        makeRequest({ sub: 'sub-staff', repo, body: { businessId: OTHER_BRAND_BIZ } }),
+      );
+      expect((decodeJwt((res.body as any).token) as any).businessId).toBeUndefined();
+    });
+
+    it('uses the membership location when nothing is proposed', async () => {
+      const res = await postPmHandoffService(makeRequest({ sub: 'sub-staff', repo }));
+      expect((decodeJwt((res.body as any).token) as any).businessId).toBe(TAGGI);
+    });
   });
 });

@@ -33,8 +33,16 @@ type PmHandoffResponse = { token: string; expiresIn: number } | { error: string 
  * Two sources, because neither alone covers the live data: the caller's own
  * membership (which is how Che Pizza's Lissaro is known at all — it is absent
  * from domain-mapping.json), and the domain-mapper entries (which cover a
- * location nobody is a member of yet). Anything else returns the membership's
- * location, never the unverified proposal.
+ * location nobody is a member of yet).
+ *
+ * Unverifiable proposal → **null**, i.e. no businessId claim at all, exactly as
+ * docs/SSO-PM-CONTRACT.md §4 states. Substituting the membership's own location
+ * would be worse than saying nothing: a Lissaro staff member asking for Lissaro
+ * (unresolvable, since Lissaro is not in domain-mapping.json and may not be
+ * their membership row) would receive a token asserting Taggi, and PM — which
+ * is specified to prefer the claim over the URL fragment — would silently open
+ * the chiusura for the wrong pizzeria. Omitting the claim lets PM fall back to
+ * `loc`, which is safe now that brandId is enforced.
  */
 async function resolveBusinessForBrand(
   proposed: string,
@@ -47,9 +55,9 @@ async function resolveBusinessForBrand(
     const match = entries.find((entry) => entry.businessId === proposed && entry.brandId === brandId);
     if (match) return proposed;
   } catch {
-    // mapper unavailable — fall through to the membership's own location
+    // mapper unavailable — cannot verify, so cannot assert
   }
-  return membershipBusinessId;
+  return null;
 }
 
 export async function postPmHandoffService(request: FastifyRequest): Promise<ServiceResponse<PmHandoffResponse>> {
