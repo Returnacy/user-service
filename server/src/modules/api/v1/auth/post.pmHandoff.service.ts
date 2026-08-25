@@ -1,7 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
-import { resolveDomainFromRequest } from '@/utils/domainMapping.js';
+import { fetchDomainBusinesses, resolveDomainFromRequest } from '@/utils/domainMapping.js';
 import { signAccessToken, type AccessTokenClaims } from '@/utils/selfIssuedJwt.js';
 
 // Roles allowed to obtain a pizzeria-manager SSO handoff token. Broader than the
@@ -26,6 +26,31 @@ function buildClaims(user: { keycloakSub: string; email: string; name?: string |
 }
 
 type PmHandoffResponse = { token: string; expiresIn: number } | { error: string };
+
+/**
+ * Accept a client-proposed location only if it demonstrably belongs to `brandId`.
+ *
+ * Two sources, because neither alone covers the live data: the caller's own
+ * membership (which is how Che Pizza's Lissaro is known at all — it is absent
+ * from domain-mapping.json), and the domain-mapper entries (which cover a
+ * location nobody is a member of yet). Anything else returns the membership's
+ * location, never the unverified proposal.
+ */
+async function resolveBusinessForBrand(
+  proposed: string,
+  brandId: string,
+  membershipBusinessId: string | null,
+): Promise<string | null> {
+  if (membershipBusinessId && proposed === membershipBusinessId) return proposed;
+  try {
+    const entries = await fetchDomainBusinesses();
+    const match = entries.find((entry) => entry.businessId === proposed && entry.brandId === brandId);
+    if (match) return proposed;
+  } catch {
+    // mapper unavailable — fall through to the membership's own location
+  }
+  return membershipBusinessId;
+}
 
 export async function postPmHandoffService(request: FastifyRequest): Promise<ServiceResponse<PmHandoffResponse>> {
   const auth = (request as any).auth as { sub?: string } | undefined;
@@ -53,13 +78,31 @@ export async function postPmHandoffService(request: FastifyRequest): Promise<Ser
       return { statusCode: 403, body: { error: 'FORBIDDEN' } };
     }
 
+    // Which location this handoff is for. The client may propose one (the
+    // staff member's daily pick — Taggi vs Lissaro), but it is only put in the
+    // token if we can tie it to this brand. An unverifiable proposal is
+    // dropped rather than echoed: see docs/SSO-PM-CONTRACT.md §4.
+    const proposedBusinessId = typeof (request.body as any)?.businessId === 'string'
+      ? String((request.body as any).businessId)
+      : null;
+    const businessId = proposedBusinessId
+      ? await resolveBusinessForBrand(proposedBusinessId, brandId, membership?.businessId ?? null)
+      : (membership?.businessId ?? null);
+
     // Short-lived (60s), audience-scoped access token. No refresh token and no
     // jti store: the 60s TTL is the accepted replay bound, so a captured token
     // is unusable within a minute and re-issuing is a single cheap call.
+    //
+    // `brandId` is the claim that makes this token tenant-bound. Without it any
+    // PizzeriaManager on the same issuer accepted any tenant's staff, and the
+    // target location came from the URL fragment — attacker-controlled.
+    const extraClaims: Record<string, unknown> = { membershipRole: role, brandId };
+    if (businessId) extraClaims.businessId = businessId;
+
     const token = await signAccessToken(buildClaims(user), {
       audience: PM_HANDOFF_AUDIENCE,
       ttlSeconds: PM_HANDOFF_TTL_SECONDS,
-      extraClaims: { membershipRole: role },
+      extraClaims,
     });
 
     return { statusCode: 200, body: { token, expiresIn: PM_HANDOFF_TTL_SECONDS } };
