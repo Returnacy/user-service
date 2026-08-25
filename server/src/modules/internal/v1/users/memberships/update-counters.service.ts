@@ -1,22 +1,9 @@
 import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
-
-function isServiceRequest(request: FastifyRequest): boolean {
-  const auth = (request as any).auth as any;
-  const azp = auth?.azp;
-  const aud = auth?.aud;
-  const allowedServices = (process.env.KEYCLOAK_SERVICE_AUDIENCE || 'campaign-service,messaging-service,user-service,business-service')
-    .split(',').map((s) => s.trim());
-  const audList: string[] = Array.isArray(aud) ? aud : (typeof aud === 'string' ? [aud] : []);
-  return (azp && allowedServices.includes(azp)) || audList.some((entry) => allowedServices.includes(entry));
-}
+import { requireServiceForTenant, resolveBrandForBusiness } from '@/utils/tenantGuard.js';
 
 export async function updateMembershipCountersService(request: FastifyRequest): Promise<ServiceResponse<{ membership: any } | { error: string }>> {
-  if (!isServiceRequest(request)) {
-    return { statusCode: 403, body: { error: 'FORBIDDEN' } };
-  }
-
   const { userId } = (request.params as any) as { userId: string };
   const body = request.body as any;
   const businessId = String(body?.businessId ?? '');
@@ -26,6 +13,12 @@ export async function updateMembershipCountersService(request: FastifyRequest): 
   if (!userId || (!businessId && !brandId)) {
     return { statusCode: 400, body: { error: 'INVALID_INPUT' } };
   }
+
+  // Writing stamp/coupon counters is a write into a tenant's loyalty ledger, so
+  // the caller's credential must belong to the brand that owns the membership.
+  const targetBrandId = brandId || (businessId ? await resolveBrandForBusiness(request, businessId) : null);
+  const gate = requireServiceForTenant(request, targetBrandId);
+  if (!gate.ok) return gate.response as ServiceResponse<{ error: string }>;
 
   const counters = {
     validStamps: body?.validStamps as number | undefined,

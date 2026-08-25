@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 
 import {
   signServiceToken,
-  validateInternalServiceCredentials,
+  resolveInternalServiceClient,
   getInternalServiceClients,
   type ServiceTokenClaims,
 } from '@/utils/selfIssuedJwt.js';
@@ -22,7 +22,19 @@ export async function internalAuthRoute(server: FastifyInstance) {
   if (!clients) {
     server.log.warn('[internal-auth] INTERNAL_SERVICE_CLIENTS env var is unset, empty, or invalid JSON; service-token endpoint will reject all requests');
   } else {
-    server.log.info({ clientCount: Object.keys(clients).length, clientIds: Object.keys(clients) }, '[internal-auth] INTERNAL_SERVICE_CLIENTS loaded');
+    const legacyClientIds = Object.entries(clients).filter(([, c]) => c.brandId === null).map(([id]) => id);
+    server.log.info(
+      { clientCount: Object.keys(clients).length, clientIds: Object.keys(clients), legacyClientIds },
+      '[internal-auth] INTERNAL_SERVICE_CLIENTS loaded',
+    );
+    if (legacyClientIds.length > 0) {
+      // Loud on purpose: these are the tenant-blind credentials that the
+      // rotation is meant to retire. Silence here is what let them survive.
+      server.log.warn(
+        { legacyClientIds },
+        '[internal-auth] tenant-blind service clients still configured (no brandId) — retire them, see PROVISION-BRAND.md',
+      );
+    }
   }
 
   server.post<{ Body: ServiceTokenBody }>('/service-token', {
@@ -53,7 +65,8 @@ export async function internalAuthRoute(server: FastifyInstance) {
       if (!clientId || !clientSecret) {
         return reply.status(400).send({ error: 'invalid_request' });
       }
-      if (!validateInternalServiceCredentials(clientId, clientSecret)) {
+      const client = resolveInternalServiceClient(clientId, clientSecret);
+      if (!client) {
         return reply.status(401).send({ error: 'invalid_client' });
       }
 
@@ -63,6 +76,9 @@ export async function internalAuthRoute(server: FastifyInstance) {
       if (audience) claims.audience = audience;
       if (roles.length > 0) claims.roles = roles;
       if (scope) claims.scope = scope;
+      // The tenant comes from the credential, never from the request body: a
+      // caller must not be able to pick which brand it speaks for.
+      if (client.brandId) claims.brandId = client.brandId;
 
       const accessToken = await signServiceToken(claims, { ttlSeconds: ACCESS_TOKEN_TTL_SECONDS });
 

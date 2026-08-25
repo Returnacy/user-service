@@ -1,5 +1,16 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
+/**
+ * @deprecated DEAD — no call sites left. Superseded by utils/tenantGuard.ts.
+ *
+ * Kept only so its removal can be a deliberate, separate commit. Do NOT
+ * reattach it: it is tenant-blind (`memberships.some(m => m.roles?.includes(
+ * 'admin'))` never looks at *which* brand), and its user branch was inert
+ * anyway — user-service tokens carry no membership claims, so `isAdmin` was
+ * always false and only the shared-secret `isService` path ever passed.
+ *
+ * Use `requireBrandRole()` / `requireServiceForTenant()` instead.
+ */
 export function requireAdminRole() {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = (request as any).auth as any;

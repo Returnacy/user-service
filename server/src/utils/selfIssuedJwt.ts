@@ -231,6 +231,11 @@ export type ServiceTokenClaims = {
   roles?: string[];
   resourceAccess?: Record<string, { roles: string[] }>;
   scope?: string;
+  // Tenant the calling service is deployed for. Null only for legacy
+  // (pre-rotation) clients declared as a bare secret string: those mint
+  // tenant-blind tokens and are rejected once REQUIRE_TENANT_SERVICE_TOKENS
+  // is on. See utils/tenantGuard.ts.
+  brandId?: string | null;
 };
 
 export type ServiceTokenOptions = {
@@ -259,6 +264,12 @@ export async function signServiceToken(
   if (claims.resourceAccess && Object.keys(claims.resourceAccess).length > 0) {
     payload.resource_access = claims.resourceAccess;
   }
+  // Only emit the claim when we actually know the tenant. An absent brandId is
+  // the signal "legacy tenant-blind caller" for every consumer-side guard —
+  // emitting null instead would make an unknown tenant look like a decided one.
+  if (typeof claims.brandId === 'string' && claims.brandId.length > 0) {
+    payload.brandId = claims.brandId;
+  }
 
   return new SignJWT(payload)
     .setProtectedHeader({ alg: config.alg, kid: config.kid, typ: 'JWT' })
@@ -271,8 +282,30 @@ export async function signServiceToken(
     .sign(key);
 }
 
-export type InternalServiceClients = Record<string, string>;
+/**
+ * One entry of INTERNAL_SERVICE_CLIENTS.
+ *
+ * `brandId === null` means a LEGACY, tenant-blind credential: a client declared
+ * in the old shape (bare secret string). It still works so that a rotation can
+ * run with both credentials live at once, and is refused once
+ * REQUIRE_TENANT_SERVICE_TOKENS=true. See docs/../PROVISION-BRAND.md §rotazione.
+ */
+export type InternalServiceClient = { secret: string; brandId: string | null };
+export type InternalServiceClients = Record<string, InternalServiceClient>;
 
+/**
+ * INTERNAL_SERVICE_CLIENTS accepts BOTH shapes at once, which is what makes the
+ * double-credential rotation window possible:
+ *
+ *   {
+ *     "business-service": "<legacy-secret>",                                  // legacy, tenant-blind
+ *     "business-service:chepizza": { "secret": "...", "brandId": "385d..." }, // per-tenant
+ *     "business-service:pizzalonga": { "secret": "...", "brandId": "d290..." }
+ *   }
+ *
+ * Malformed entries are skipped individually rather than voiding the whole map:
+ * one bad line must not silently disable every service caller.
+ */
 export function getInternalServiceClients(): InternalServiceClients | null {
   const raw = process.env.INTERNAL_SERVICE_CLIENTS;
   if (!raw || raw.trim().length === 0) return null;
@@ -281,27 +314,54 @@ export function getInternalServiceClients(): InternalServiceClients | null {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
     const result: InternalServiceClients = {};
     for (const [k, v] of Object.entries(parsed)) {
-      if (typeof k === 'string' && typeof v === 'string' && k.length > 0 && v.length > 0) {
-        result[k] = v;
+      if (typeof k !== 'string' || k.length === 0) continue;
+      if (typeof v === 'string' && v.length > 0) {
+        result[k] = { secret: v, brandId: null };
+        continue;
+      }
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        const secret = (v as any).secret;
+        const brandId = (v as any).brandId;
+        if (typeof secret !== 'string' || secret.length === 0) continue;
+        result[k] = {
+          secret,
+          brandId: typeof brandId === 'string' && brandId.length > 0 ? brandId : null,
+        };
       }
     }
-    return result;
+    return Object.keys(result).length > 0 ? result : null;
   } catch {
     return null;
   }
 }
 
-export function validateInternalServiceCredentials(clientId: string, clientSecret: string): boolean {
-  const clients = getInternalServiceClients();
-  if (!clients) return false;
-  const expected = clients[clientId];
-  if (!expected) return false;
-  if (expected.length !== clientSecret.length) return false;
+function constantTimeEquals(expected: string, actual: string): boolean {
+  if (expected.length !== actual.length) return false;
   let mismatch = 0;
   for (let i = 0; i < expected.length; i++) {
-    mismatch |= expected.charCodeAt(i) ^ clientSecret.charCodeAt(i);
+    mismatch |= expected.charCodeAt(i) ^ actual.charCodeAt(i);
   }
   return mismatch === 0;
+}
+
+/**
+ * Validate credentials and return the resolved client (so the caller can put the
+ * tenant into the minted token). Returns null on unknown client or bad secret —
+ * the caller must not distinguish the two in its response.
+ */
+export function resolveInternalServiceClient(
+  clientId: string,
+  clientSecret: string,
+): InternalServiceClient | null {
+  const clients = getInternalServiceClients();
+  if (!clients) return null;
+  const entry = clients[clientId];
+  if (!entry) return null;
+  return constantTimeEquals(entry.secret, clientSecret) ? entry : null;
+}
+
+export function validateInternalServiceCredentials(clientId: string, clientSecret: string): boolean {
+  return resolveInternalServiceClient(clientId, clientSecret) !== null;
 }
 
 export type ClaimsFromKeycloak = AccessTokenClaims;

@@ -91,10 +91,33 @@ describe('signServiceToken', () => {
 describe('getInternalServiceClients / validateInternalServiceCredentials', () => {
   it('parses a JSON map from env', () => {
     const clients = getInternalServiceClients();
+    // Legacy bare-string entries normalize to { secret, brandId: null }.
     expect(clients).toEqual({
-      'campaign-service': 'campaign-secret-aaa',
-      'business-service': 'business-secret-bbb',
-      'messaging-service': 'messaging-secret-ccc',
+      'campaign-service': { secret: 'campaign-secret-aaa', brandId: null },
+      'business-service': { secret: 'business-secret-bbb', brandId: null },
+      'messaging-service': { secret: 'messaging-secret-ccc', brandId: null },
+    });
+  });
+
+  it('parses the per-tenant object shape alongside legacy strings', () => {
+    process.env.INTERNAL_SERVICE_CLIENTS = JSON.stringify({
+      'business-service': 'legacy-secret',
+      'business-service:chepizza': { secret: 'new-secret', brandId: 'brand-chepizza' },
+    });
+    expect(getInternalServiceClients()).toEqual({
+      'business-service': { secret: 'legacy-secret', brandId: null },
+      'business-service:chepizza': { secret: 'new-secret', brandId: 'brand-chepizza' },
+    });
+  });
+
+  it('skips malformed entries without voiding the whole map', () => {
+    process.env.INTERNAL_SERVICE_CLIENTS = JSON.stringify({
+      'good-service': { secret: 's', brandId: 'b' },
+      'no-secret': { brandId: 'b' },
+      'empty-secret': '',
+    });
+    expect(getInternalServiceClients()).toEqual({
+      'good-service': { secret: 's', brandId: 'b' },
     });
   });
 

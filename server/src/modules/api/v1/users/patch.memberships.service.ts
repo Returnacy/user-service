@@ -1,10 +1,11 @@
 import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
+import { isPlatformAdmin, requireServiceForTenant, resolveBrandForBusiness } from '@/utils/tenantGuard.js';
 
 type MembershipInput = { brandId: string | null; businessId: string | null; roles: string[] };
 
-type PatchMembershipsResponse = { ok: true } | { error: string };
+type PatchMembershipsResponse = { ok: true } | { error: string; message?: string };
 
 export async function patchMembershipsService(
   request: FastifyRequest<{ Params: { userId: string }; Body: { memberships?: MembershipInput[] } }>
@@ -16,9 +17,25 @@ export async function patchMembershipsService(
 
   const body = request.body ?? {};
   const membershipsInput = Array.isArray(body.memberships) ? body.memberships : [];
+  if (membershipsInput.length === 0) {
+    return { statusCode: 400, body: { error: 'NO_MEMBERSHIPS' } };
+  }
 
   try {
     const repository = (request.server as any).repository as any;
+
+    // Each entry is gated on its own brand, so a request mixing brands is only
+    // as authorized as its weakest entry. A platform admin is the single
+    // cross-brand identity and skips the per-entry check.
+    const platformAdmin = isPlatformAdmin(request);
+    if (!platformAdmin) {
+      for (const m of membershipsInput) {
+        const targetBrandId = m.brandId
+          ?? (m.businessId ? await resolveBrandForBusiness(request, m.businessId) : null);
+        const gate = requireServiceForTenant(request, targetBrandId);
+        if (!gate.ok) return gate.response as ServiceResponse<{ error: string }>;
+      }
+    }
 
     const user = await repository.findUserById(userId);
     if (!user) {

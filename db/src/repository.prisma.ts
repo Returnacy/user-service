@@ -226,6 +226,24 @@ export class RepositoryPrisma {
     return prisma.userMembership.findFirst({ where: { userId, brandId } });
   }
 
+  /**
+   * Which brand a location belongs to, derived from any membership that names
+   * both. Used by the tenant guards to check a caller's brand against a request
+   * that only carries a businessId.
+   *
+   * Authoritative for any location that has at least one member (every write
+   * path — register, /me, counter sync — stores brandId alongside businessId).
+   * A brand-new location with zero members returns null; callers fall back to
+   * the domain-mapper entries and, failing that, deny.
+   */
+  async findBrandIdByBusinessId(businessId: string): Promise<string | null> {
+    const row = await prisma.userMembership.findFirst({
+      where: { businessId, brandId: { not: null } },
+      select: { brandId: true },
+    });
+    return row?.brandId ?? null;
+  }
+
   // Team management: every membership in a brand whose role is not USER,
   // joined with the owning user. Ordering is applied in the service layer.
   async listBrandTeamMembers(brandId: string): Promise<Array<UserMembership & { user: User }>> {

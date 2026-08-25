@@ -2,8 +2,7 @@ import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
-import { buildMembershipAttribute, parseTokenMemberships } from '@/utils/memberships.js';
-import type { Membership } from '@/utils/memberships.js';
+import { parseTokenMemberships } from '@/utils/memberships.js';
 
 function deriveRoleFromMembership(match: any): string {
   const rolesArr = Array.isArray(match?.roles) ? match.roles.map((r: any) => String(r).toLowerCase()) : [];
@@ -38,10 +37,24 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
     const host = rawHost ? rawHost.split(':')[0] : undefined;
     const domain = await resolveDomain(host);
 
-    let tokenMembershipClaims = parseTokenMemberships((auth as any).memberships);
+    const tokenMembershipClaims = parseTokenMemberships((auth as any).memberships);
     let memberships = await repository.listMemberships(user.id);
 
-    if (domain) {
+    // Membership creation used to happen right here, on a plain GET: any
+    // authenticated user who merely loaded another brand's SPA was enrolled as
+    // that brand's customer — no intent, no privacy acceptance for that brand.
+    // Enrolment now lives only where the user acts on purpose: register
+    // (createUserWithMembership) and login on the brand's own host
+    // (post.login.service).
+    //
+    // ME_AUTO_ENROLL=true restores the old behaviour. The knob exists because
+    // this runs against a live tenant with no staging: if some pre-existing
+    // account turns out to depend on the implicit enrolment, it can be flipped
+    // back from Railway without shipping a revert. Default is the safe path.
+    const autoEnrollFlag = String(process.env.ME_AUTO_ENROLL ?? '').toLowerCase().trim();
+    const autoEnrollEnabled = autoEnrollFlag === 'true' || autoEnrollFlag === '1' || autoEnrollFlag === 'yes';
+
+    if (domain && autoEnrollEnabled) {
       const targetBusinessId = domain.businessId ?? null;
       const targetBrandId = domain.brandId ?? null;
       const hasMembership = targetBusinessId
@@ -50,54 +63,21 @@ export async function getMeService(request: FastifyRequest): Promise<ServiceResp
           ? memberships.some((m: any) => (m.brandId ?? null) === targetBrandId)
           : false;
       if (!hasMembership && (targetBusinessId || targetBrandId)) {
+        request.log.warn(
+          { userId: user.id, targetBrandId, targetBusinessId },
+          '[me] implicit membership enrolment (ME_AUTO_ENROLL=true)',
+        );
         await repository.upsertMembership(user.id, { businessId: targetBusinessId, brandId: targetBrandId, role: 'USER' });
         memberships = await repository.listMemberships(user.id);
-
-        const alreadyScoped = tokenMembershipClaims.some((m) => (
-          targetBusinessId
-            ? (m?.businessId ?? '') === targetBusinessId
-            : targetBrandId
-              ? (m?.brandId ?? '') === targetBrandId
-              : false
-        ));
-        if (!alreadyScoped) {
-          tokenMembershipClaims = [...tokenMembershipClaims, { brandId: targetBrandId ?? null, businessId: targetBusinessId, roles: ['user'] }];
-        }
-
-        const attributeMemberships: Membership[] = tokenMembershipClaims
-          .map((m) => {
-            const business = m?.businessId ? String(m.businessId) : null;
-            const brand = m?.brandId ?? null;
-            if (!business && !brand) return null;
-            const rolesSource = Array.isArray(m?.roles) && m.roles.length
-              ? m.roles
-              : (m?.role ? [String(m.role)] : ['user']);
-            return {
-              brandId: brand,
-              businessId: business,
-              roles: rolesSource.map((r) => String(r).toLowerCase()),
-            } as Membership;
-          })
-          .filter((m): m is Membership => m !== null);
-
-      }
-
-      try {
-        const match = targetBusinessId
-          ? tokenMembershipClaims.find((m) => (m?.businessId ?? '') === targetBusinessId)
-          : targetBrandId
-            ? tokenMembershipClaims.find((m) => (m?.brandId ?? '') === targetBrandId)
-            : null;
-        if (match) {
-          const effective = deriveRoleFromMembership(match);
-          const asDbRole = String(effective || 'user').toUpperCase();
-          await repository.upsertMembership(user.id, { businessId: targetBusinessId, brandId: targetBrandId, role: asDbRole });
-          memberships = await repository.listMemberships(user.id);
-        }
-      } catch {
-        // ignore token parsing problems
       }
     }
+
+    // A second write used to follow, taking the role from
+    // `tokenMembershipClaims` — i.e. from the caller's own token — and
+    // persisting it. It was inert only because user-service does not put
+    // membership claims in its tokens; the day it did, a token would have
+    // decided its own role. Roles change through the team API, nowhere else.
+    void deriveRoleFromMembership;
 
     const localMemberships = memberships;
 

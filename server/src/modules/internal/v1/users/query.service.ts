@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { fetchDomainBusinesses } from '@/utils/domainMapping.js';
+import { requireServiceForTenant, resolveBrandForBusiness } from '@/utils/tenantGuard.js';
 
 type Rule = { database: 'USER' | string; field: string; operator: string; value: any };
 
@@ -142,21 +143,19 @@ function pickUserField(rec: any, field: string): any {
   return undefined;
 }
 
-function isServiceRequest(request: FastifyRequest): boolean {
-  const auth = (request as any).auth as any;
-  const azp = auth?.azp;
-  const aud = auth?.aud;
-  const allowedServices = (process.env.KEYCLOAK_SERVICE_AUDIENCE || 'campaign-service,messaging-service,user-service')
-    .split(',').map((s) => s.trim());
-  const audList: string[] = Array.isArray(aud) ? aud : (typeof aud === 'string' ? [aud] : []);
-  return (azp && allowedServices.includes(azp)) || audList.some((a) => allowedServices.includes(a));
-}
-
 export async function postUsersQueryService(request: FastifyRequest): Promise<ServiceResponse<{ users: any[] } | { error: string }>> {
   try {
-    if (!isServiceRequest(request)) {
-      return { statusCode: 403, body: { error: 'FORBIDDEN' } };
-    }
+    // Tenant gate. The scope of the query is whatever the body asks for, so the
+    // brand it resolves to is exactly what the caller's credential must match —
+    // otherwise any service secret dumps any brand's customer list.
+    const scopeBody = (request.body ?? {}) as QueryBody;
+    const requestedBrandId = typeof scopeBody.brandId === 'string' && scopeBody.brandId.length ? scopeBody.brandId : null;
+    const requestedBusinessId = typeof scopeBody.businessId === 'string' && scopeBody.businessId.length ? scopeBody.businessId : null;
+    const targetBrandId = requestedBrandId
+      ?? (requestedBusinessId ? await resolveBrandForBusiness(request, requestedBusinessId) : null);
+
+    const gate = requireServiceForTenant(request, targetBrandId);
+    if (!gate.ok) return gate.response as ServiceResponse<{ error: string }>;
 
     if (process.env.INTERNAL_USERS_QUERY_MOCK === '1') {
       const nowIso = new Date().toISOString();

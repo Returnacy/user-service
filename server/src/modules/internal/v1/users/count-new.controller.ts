@@ -1,19 +1,9 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
+import { requireServiceForTenant, resolveBrandForBusiness } from '@/utils/tenantGuard.js';
+
 export async function serviceCountNewUsersHandler(request: FastifyRequest, reply: FastifyReply) {
   try {
-    // Service auth similar to other internal endpoints
-    const auth: any = (request as any).auth;
-    const azp = auth?.azp;
-    const aud = auth?.aud;
-    const allowedServices = (process.env.KEYCLOAK_SERVICE_AUDIENCE || 'campaign-service,messaging-service,user-service')
-      .split(',').map((s) => s.trim());
-    const audList: string[] = Array.isArray(aud) ? aud : (typeof aud === 'string' ? [aud] : []);
-    const isService = (azp && allowedServices.includes(azp)) || audList.some((a) => allowedServices.includes(a));
-    if (!isService) {
-      return reply.status(403).send({ error: 'FORBIDDEN' });
-    }
-
     const q: any = request.query || {};
     const businessIdRaw = q.businessId ?? (request.body as any)?.businessId;
     const brandIdRaw = q.brandId ?? (request.body as any)?.brandId;
@@ -23,6 +13,11 @@ export async function serviceCountNewUsersHandler(request: FastifyRequest, reply
     if (!businessId && !brandId) {
       return reply.status(400).send({ error: 'businessId or brandId required' });
     }
+
+    const targetBrandId = brandId ?? (businessId ? await resolveBrandForBusiness(request, businessId) : null);
+    const gate = requireServiceForTenant(request, targetBrandId);
+    if (!gate.ok) return reply.status(gate.response.statusCode).send(gate.response.body);
+
     if (!sinceRaw || typeof sinceRaw !== 'string') {
       return reply.status(400).send({ error: 'since required (ISO date string)' });
     }

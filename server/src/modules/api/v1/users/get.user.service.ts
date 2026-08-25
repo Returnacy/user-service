@@ -4,6 +4,7 @@ import axios from 'axios';
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { resolveBusinessServiceUrl, resolveDomain } from '@/utils/domainMapping.js';
 import { parseTokenMemberships } from '@/utils/memberships.js';
+import { getBrandCaller } from '@/utils/tenantGuard.js';
 
 type UserResponse = Record<string, unknown>;
 
@@ -27,7 +28,23 @@ export async function getUserService(request: FastifyRequest<{ Params: { userId:
       return { statusCode: 404, body: { error: 'NOT_FOUND' } };
     }
 
-    const memberships = await repository.listMemberships(user.id);
+    const allMemberships = await repository.listMemberships(user.id);
+
+    // Tenant scope. requireBrandRole has already established that the caller is
+    // staff (or a bound service / platform admin) of `caller.brandId`; here we
+    // make sure the *target* belongs to that same brand and that nothing from
+    // any other brand leaks into the payload.
+    const caller = getBrandCaller(request);
+    const callerBrandId = caller?.brandId ?? null;
+    const memberships = callerBrandId
+      ? allMemberships.filter((m: any) => (m.brandId ?? null) === callerBrandId)
+      : allMemberships;
+
+    // 404, not 403: whether a given user exists in *another* brand is itself
+    // information this caller is not entitled to.
+    if (callerBrandId && memberships.length === 0) {
+      return { statusCode: 404, body: { error: 'NOT_FOUND' } };
+    }
 
   const host = (request.headers['x-forwarded-host'] as string) || (request.headers['host'] as string);
   const domain = await resolveDomain(host);

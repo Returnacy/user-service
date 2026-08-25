@@ -10,8 +10,10 @@ export default fp(async (fastify) => {
       const azp = request.headers['x-test-azp'] as string | undefined;
       const sub = request.headers['x-test-sub'] as string | undefined;
       const aud = request.headers['x-test-aud'] as string | undefined;
-      if (azp || sub || aud) {
-        (request as any).auth = { azp, sub, aud };
+      // Lets tests exercise the tenant claim that real service tokens carry.
+      const brandId = request.headers['x-test-brand-id'] as string | undefined;
+      if (azp || sub || aud || brandId) {
+        (request as any).auth = { azp, sub, aud, brandId };
       }
     });
     return;

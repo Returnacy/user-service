@@ -125,24 +125,27 @@ describe('user-service core endpoints', () => {
     expect(body.keycloakSub).toBeDefined();
   });
 
-  it('GET /api/v1/me auto-enrolls membership for domain when missing', async () => {
-    // Provide a fake auth user via headers
+  it('GET /api/v1/me does NOT enrol the caller into the host brand', async () => {
+    // Was: "auto-enrolls membership for domain when missing". That behaviour is
+    // gone by design — merely loading a brand's SPA must not make you that
+    // brand's customer (no intent, no privacy acceptance for that brand).
+    // Enrolment now happens only on register, and on login against the brand's
+    // own host. See get.me.service.ts / ME_AUTO_ENROLL.
     const sub = 'test-sub-1';
     const host = 'fidelity.business.chepizzadasalva.it';
     (axios.put as any).mockResolvedValue({ status: 204 });
 
-    // First call: create local user via upsert
-  let res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
+    let res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
     expect(res.statusCode).toBe(200);
     const first = res.json();
     expect(first.id).toBeDefined();
     expect(Array.isArray(first.memberships)).toBe(true);
+    expect(first.memberships.length).toBe(0);
 
-    // Second call should still work and not duplicate membership
-  res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
+    // Idempotent: still no membership, and the profile itself still returns 200.
+    res = await server.inject({ method: 'GET', url: '/api/v1/me', headers: { host, 'x-test-sub': sub } });
     expect(res.statusCode).toBe(200);
-    const second = res.json();
-    expect(second.memberships.length).toBeGreaterThanOrEqual(1);
+    expect(res.json().memberships.length).toBe(0);
   });
 
   it('POST /internal/v1/users/query requires service auth and returns users array', async () => {
