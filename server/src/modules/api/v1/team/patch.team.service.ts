@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
+import { findMembershipInBrand } from '@/utils/tenantGuard.js';
 import { resolveTeamContext } from './team.context.js';
 import { toTeamMember, type TeamMember } from './team.member.js';
 
@@ -46,7 +47,10 @@ export async function patchTeamService(
     const repository = (request.server as any).repository as any;
 
     // 1. Target must have a membership in the caller's brand.
-    const targetMembership = await repository.getMembershipByBrand(targetUserId, brandId);
+    // The TARGET's membership, under the same rule: a staff member whose row
+    // predates brand-scoped membership must still be demotable by their own
+    // brand manager.
+    const targetMembership = await findMembershipInBrand(request, targetUserId, brandId);
     if (!targetMembership) {
       return { statusCode: 404, body: { error: 'MEMBER_NOT_FOUND' } };
     }

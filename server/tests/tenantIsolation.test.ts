@@ -417,5 +417,22 @@ describe('cross-tenant isolation', () => {
       });
       expect(res.statusCode).toBe(200);
     });
+
+    // Stamping path. Under a BRAND wallet the row was resolved by brandId
+    // alone, so a customer whose only row is a legacy one got a 404
+    // MEMBERSHIP_NOT_FOUND: the stamp persisted in business-service's DB but
+    // the counters never synced back.
+    it('finds a legacy row when the customer has no brand-scoped membership', async () => {
+      repo._memberships.push({ userId: 'u-legacy-cust', brandId: null, businessId: BIZ_A, role: 'USER', validStamps: 1 });
+      const res = await server.inject({
+        method: 'POST',
+        url: '/internal/v1/users/u-legacy-cust/memberships/counters',
+        headers: { 'x-test-azp': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
+        payload: { businessId: BIZ_A, brandId: BRAND_A, scope: 'BRAND', validStamps: 4 },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(repo._memberships.find((m) => m.userId === 'u-legacy-cust')?.validStamps).toBe(4);
+      repo._memberships.pop();
+    });
   });
 });

@@ -279,6 +279,45 @@ export function membershipBelongsToBrand(
 }
 
 /**
+ * The membership a user holds in a brand, under the same in-tenant rule as
+ * business-service — i.e. including the legacy rows that carry a businessId
+ * with a NULL brandId.
+ *
+ * Replaces repository.getMembershipByBrand() on the authenticated paths. That
+ * method matches brandId alone, so for a legacy row it returns null and the
+ * caller concludes "not a member of this brand" — which is how the same person
+ * could stamp a customer and then be refused the team page, the
+ * PizzeriaManager handoff, or a role change.
+ *
+ * The exact brand row wins when both exist: NULL brandIds do not collide under
+ * the (userId, brandId) unique index, so a user can hold several legacy rows,
+ * and the brand-scoped one is the authoritative wallet.
+ */
+export async function findMembershipInBrand(
+  request: FastifyRequest,
+  userId: string,
+  brandId: string,
+): Promise<any | null> {
+  const repository = (request.server as any).repository as any;
+
+  if (typeof repository?.listMemberships !== 'function') {
+    // Narrow repositories (some tests, some fakes) only implement the lookup.
+    return typeof repository?.getMembershipByBrand === 'function'
+      ? repository.getMembershipByBrand(userId, brandId)
+      : null;
+  }
+
+  const memberships = await repository.listMemberships(userId);
+  const list = Array.isArray(memberships) ? memberships : [];
+
+  const exact = list.find((m: any) => m?.brandId === brandId);
+  if (exact) return exact;
+
+  const brandBusinessIds = await getBrandBusinessIds(request, brandId);
+  return list.find((m: any) => membershipBelongsToBrand(m, brandId, brandBusinessIds)) ?? null;
+}
+
+/**
  * Roles that count as "works here", ordered loosely by power. USER is
  * deliberately absent: a customer is not staff of the brand.
  */
@@ -338,10 +377,7 @@ export function requireBrandRole(roles: ReadonlySet<string> = BRAND_STAFF_ROLES)
     // rows carrying only a businessId. business-service admits those, so
     // matching them here too is what keeps the two services agreeing on who
     // belongs to a brand.
-    const brandBusinessIds = await getBrandBusinessIds(request, brandId);
-    const memberships = await repository.listMemberships(caller.id);
-    const membership = (Array.isArray(memberships) ? memberships : [])
-      .find((m: any) => membershipBelongsToBrand(m, brandId, brandBusinessIds));
+    const membership = await findMembershipInBrand(request, caller.id, brandId);
 
     const role = membership?.role ? String(membership.role).toUpperCase() : null;
     if (!role || !roles.has(role)) {

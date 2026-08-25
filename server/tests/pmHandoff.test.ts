@@ -40,9 +40,15 @@ function createRepo() {
   const users = [
     { id: 'u-staff', keycloakSub: 'sub-staff', email: 'staff@x.com', name: 'Sara', surname: 'Staff' },
     { id: 'u-user', keycloakSub: 'sub-user', email: 'user@x.com', name: 'Ugo', surname: 'User' },
+    { id: 'u-legacy', keycloakSub: 'sub-legacy', email: 'legacy@x.com', name: 'Lino', surname: 'Legacy' },
+    { id: 'u-foreign', keycloakSub: 'sub-foreign', email: 'foreign@x.com', name: 'Fabio', surname: 'Foreign' },
   ];
   const memberships: Membership[] = [
     { userId: 'u-staff', brandId: BRAND, businessId: TAGGI, role: 'STAFF' },
+    // legacy shape: businessId of this brand, no brandId
+    { userId: 'u-legacy', brandId: null, businessId: TAGGI, role: 'STAFF' },
+    // legacy shape pointing at a location of a different brand
+    { userId: 'u-foreign', brandId: null, businessId: OTHER_BRAND_BIZ, role: 'STAFF' },
     { userId: 'u-user', brandId: BRAND, businessId: TAGGI, role: 'USER' },
   ];
   return {
@@ -50,6 +56,15 @@ function createRepo() {
     async getMembershipByBrand(userId: string, brandId: string) {
       return memberships.find((m) => m.userId === userId && m.brandId === brandId) ?? null;
     },
+    async listMemberships(userId: string) {
+      return memberships.filter((m) => m.userId === userId);
+    },
+    async listBusinessIdsForBrand(brandId: string) {
+      return Array.from(new Set(
+        memberships.filter((m) => m.brandId === brandId && m.businessId).map((m) => m.businessId as string),
+      ));
+    },
+    _memberships: memberships,
   };
 }
 
@@ -158,5 +173,23 @@ describe('POST /api/v1/auth/pm-handoff', () => {
       const res = await postPmHandoffService(makeRequest({ sub: 'sub-staff', repo }));
       expect((decodeJwt((res.body as any).token) as any).businessId).toBe(TAGGI);
     });
+  });
+});
+
+// Same rule as stamping: a row carrying only a businessId of this brand means
+// the person works here. Without it a Lissaro-era staff member could stamp all
+// evening and then be refused the chiusura handoff.
+describe('pm-handoff for brandId-NULL membership rows', () => {
+  it('mints a token for staff whose row names only a location of this brand', async () => {
+    const res = await postPmHandoffService(makeRequest({ sub: 'sub-legacy', repo }));
+    expect(res.statusCode).toBe(200);
+    const decoded = decodeJwt((res.body as any).token) as any;
+    expect(decoded.brandId).toBe(BRAND);
+    expect(decoded.membershipRole).toBe('STAFF');
+  });
+
+  it('refuses a row naming a location of a different brand', async () => {
+    const res = await postPmHandoffService(makeRequest({ sub: 'sub-foreign', repo }));
+    expect(res.statusCode).toBe(403);
   });
 });

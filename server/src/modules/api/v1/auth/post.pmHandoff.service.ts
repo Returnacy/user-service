@@ -3,6 +3,7 @@ import type { FastifyRequest } from 'fastify';
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { fetchDomainBusinesses, resolveDomainFromRequest } from '@/utils/domainMapping.js';
 import { signAccessToken, type AccessTokenClaims } from '@/utils/selfIssuedJwt.js';
+import { findMembershipInBrand } from '@/utils/tenantGuard.js';
 
 // Roles allowed to obtain a pizzeria-manager SSO handoff token. Broader than the
 // team-admin set: any staff member (and up) may open pizzeria-manager.
@@ -80,7 +81,10 @@ export async function postPmHandoffService(request: FastifyRequest): Promise<Ser
       return { statusCode: 403, body: { error: 'FORBIDDEN' } };
     }
 
-    const membership = await repository.getMembershipByBrand(user.id, brandId);
+    // Legacy rows (businessId set, brandId NULL) count as membership of this
+    // brand, exactly as they do for stamping — otherwise the same staff member
+    // can stamp all evening and not open the chiusura.
+    const membership = await findMembershipInBrand(request, user.id, brandId);
     const role = membership?.role ? String(membership.role) : null;
     if (!role || !PM_HANDOFF_ROLES.has(role)) {
       return { statusCode: 403, body: { error: 'FORBIDDEN' } };

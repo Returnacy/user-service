@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { resolveDomainFromRequest } from '@/utils/domainMapping.js';
+import { findMembershipInBrand } from '@/utils/tenantGuard.js';
 
 // Roles allowed to administer a brand's team (GET /team, PATCH /team/:userId,
 // GET /team/search). STAFF/MANAGER/USER are intentionally excluded.
@@ -41,7 +42,9 @@ export async function resolveTeamContext(request: FastifyRequest): Promise<TeamC
     return { ok: false, response: { statusCode: 403, body: { error: 'FORBIDDEN' } } };
   }
 
-  const membership = await repository.getMembershipByBrand(caller.id, brandId);
+  // Same in-tenant rule as business-service and requireBrandRole: a row that
+  // carries only a businessId of this brand still means "works here".
+  const membership = await findMembershipInBrand(request, caller.id, brandId);
   const callerRole = membership?.role ? String(membership.role) : null;
   if (!callerRole || !TEAM_ADMIN_ROLES.has(callerRole)) {
     return { ok: false, response: { statusCode: 403, body: { error: 'FORBIDDEN' } } };

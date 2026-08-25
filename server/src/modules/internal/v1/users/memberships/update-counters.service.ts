@@ -1,7 +1,7 @@
 import type { FastifyRequest } from 'fastify';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
-import { requireServiceForTenant, resolveBrandForBusiness } from '@/utils/tenantGuard.js';
+import { findMembershipInBrand, requireServiceForTenant, resolveBrandForBusiness } from '@/utils/tenantGuard.js';
 
 export async function updateMembershipCountersService(request: FastifyRequest): Promise<ServiceResponse<{ membership: any } | { error: string }>> {
   const { userId } = (request.params as any) as { userId: string };
@@ -31,8 +31,16 @@ export async function updateMembershipCountersService(request: FastifyRequest): 
   // Under a BRAND wallet the counters live on the single brand-scoped membership
   // (the per-location membershipId may not exist for the location being stamped),
   // so resolve by brand. Otherwise resolve by the specific location.
+  //
+  // findMembershipInBrand rather than getMembershipByBrand: a customer whose
+  // only row is a legacy one (businessId set, brandId NULL) has no brand-scoped
+  // row, so the narrow lookup returned null and this answered 404
+  // MEMBERSHIP_NOT_FOUND. The stamp still lands in business-service's DB, but
+  // the counters never sync — precisely the failure MULTI_LOCATION_ROLLOUT.md's
+  // verification step 5 says to watch for. The exact brand row still wins when
+  // it exists, so nothing changes for a normal customer.
   const membership = (scope === 'BRAND' && brandId)
-    ? await repository.getMembershipByBrand(userId, brandId)
+    ? await findMembershipInBrand(request, userId, brandId)
     : await repository.getMembership(userId, businessId);
   if (!membership) {
     return { statusCode: 404, body: { error: 'MEMBERSHIP_NOT_FOUND' } };

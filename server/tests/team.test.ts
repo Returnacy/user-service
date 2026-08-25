@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // the resolved brand without a live mapper.
 vi.mock('@/utils/domainMapping.js', () => ({
   resolveDomainFromRequest: vi.fn(),
+  fetchDomainBusinesses: vi.fn().mockResolvedValue([]),
 }));
 
 import { resolveDomainFromRequest } from '@/utils/domainMapping.js';
@@ -28,6 +29,10 @@ function createRepo() {
     { id: 't-mgr', keycloakSub: 'sub-tmgr', email: 'tmgr@x.com', name: 'Tea', surname: 'Manager' },
     { id: 't-bm', keycloakSub: 'sub-tbm', email: 'tbm@x.com', name: 'Bea', surname: 'Brandm' },
     { id: 't-admin', keycloakSub: 'sub-tadmin', email: 'tadmin@x.com', name: 'Aldo', surname: 'Admin' },
+    // legacy shape: membership row with a businessId and a NULL brandId
+    { id: 'u-legacy-bm', keycloakSub: 'sub-legacy-bm', email: 'legacybm@x.com', name: 'Lino', surname: 'Legacy' },
+    { id: 'u-foreign-bm', keycloakSub: 'sub-foreign-bm', email: 'foreignbm@x.com', name: 'Fabio', surname: 'Foreign' },
+    { id: 't-legacy-staff', keycloakSub: 'sub-tlegacy', email: 'tlegacy@x.com', name: 'Tina', surname: 'Legacy' },
     // promotion candidates (plain USER)
     { id: 'c-mario', keycloakSub: 'sub-mario', email: 'mario@x.com', name: 'Mario', surname: 'Rossi' },
     { id: 'c-maria', keycloakSub: 'sub-maria', email: 'maria@x.com', name: 'Maria', surname: 'Bianchi' },
@@ -42,6 +47,9 @@ function createRepo() {
     { userId: 't-mgr', brandId: BRAND, businessId: 'biz-1', role: 'MANAGER' },
     { userId: 't-bm', brandId: BRAND, businessId: 'biz-1', role: 'BRAND_MANAGER' },
     { userId: 't-admin', brandId: BRAND, businessId: 'biz-1', role: 'ADMIN' },
+    { userId: 'u-legacy-bm', brandId: null, businessId: 'biz-1', role: 'BRAND_MANAGER' },
+    { userId: 'u-foreign-bm', brandId: null, businessId: 'biz-of-another-brand', role: 'BRAND_MANAGER' },
+    { userId: 't-legacy-staff', brandId: null, businessId: 'biz-1', role: 'STAFF' },
     { userId: 'c-mario', brandId: BRAND, businessId: 'biz-1', role: 'USER' },
     { userId: 'c-maria', brandId: BRAND, businessId: 'biz-1', role: 'USER' },
   ];
@@ -53,6 +61,14 @@ function createRepo() {
     async findUserById(id: string) { return users.find((u) => u.id === id) ?? null; },
     async getMembershipByBrand(userId: string, brandId: string) {
       return memberships.find((m) => m.userId === userId && m.brandId === brandId) ?? null;
+    },
+    async listMemberships(userId: string) {
+      return memberships.filter((m) => m.userId === userId);
+    },
+    async listBusinessIdsForBrand(brandId: string) {
+      return Array.from(new Set(
+        memberships.filter((m) => m.brandId === brandId && m.businessId).map((m) => m.businessId as string),
+      ));
     },
     async listBrandTeamMembers(brandId: string) {
       return memberships
@@ -229,5 +245,30 @@ describe('GET /api/v1/team/search', () => {
     expect(body.users.every((u: any) => u.userId.startsWith('c-'))).toBe(true);
     expect(body.users[0]).toHaveProperty('email');
     expect(body.users[0]).not.toHaveProperty('role');
+  });
+});
+
+// Membership rows that carry a businessId with a NULL brandId predate
+// brand-scoped membership. business-service counts them as in-tenant, so every
+// user-service path has to as well — otherwise the same person can stamp all
+// evening and then be refused the team page or a role change.
+describe('team access for brandId-NULL membership rows', () => {
+  it('admits a BRAND_MANAGER whose row names only a location of this brand', async () => {
+    const res = await getTeamService(makeRequest({ sub: 'sub-legacy-bm', repo }));
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('refuses a row naming a location of a different brand', async () => {
+    // The fallback widens what counts as this brand; it must not remove the boundary.
+    const res = await getTeamService(makeRequest({ sub: 'sub-foreign-bm', repo }));
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('lets a brand manager change the role of a legacy-row staff member', async () => {
+    const res = await patchTeamService(makeRequest({
+      sub: 'sub-bm', params: { userId: 't-legacy-staff' }, body: { role: 'MANAGER' }, repo,
+    }));
+    expect(res.statusCode).toBe(200);
+    expect((res.body as any).member.role).toBe('MANAGER');
   });
 });
