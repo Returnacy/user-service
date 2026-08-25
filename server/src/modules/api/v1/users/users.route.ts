@@ -13,9 +13,10 @@ export async function usersRoute(server: FastifyInstance) {
   server.get('/:userId', { preHandler: [requireBrandRole()], handler: getUserByIdHandler });
 
   // Membership writes are service-or-platform-admin only, and the credential
-  // must be bound to the brand being written. The old requireAdminRole() was
-  // both tenant-blind and, in practice, dead for users: user tokens carry no
-  // membership claims, so `isAdmin` was always false and only `isService`
-  // ever passed — a shared secret was enough to enrol anyone anywhere.
+  // must be bound to the brand being written (see patch.memberships.service).
+  // The guard that used to sit here, requireAdminRole(), was tenant-blind and
+  // in practice dead for users: user tokens carry no membership claims, so its
+  // `isAdmin` branch was always false and only `isService` ever passed — a
+  // shared secret was enough to enrol anyone into anyone's brand.
   server.patch('/:userId/memberships', { handler: patchMembershipsHandler });
 }
