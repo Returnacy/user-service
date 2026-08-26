@@ -17,7 +17,7 @@ import {
   fetchDomainBusinesses,
   resolveBusinessServiceUrl,
 } from '@/utils/domainMapping.js';
-import { _resetLegacyWarnings, requireServiceForTenant } from '@/utils/tenantGuard.js';
+import { _resetLegacyWarnings, getServiceIdentity, requireServiceForTenant } from '@/utils/tenantGuard.js';
 import { buildServer } from '../src/appBuilder.js';
 
 const BRAND_A = 'brand-a-chepizza';
@@ -130,6 +130,75 @@ describe('cross-tenant isolation', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Who counts as a service. This is the primitive every guard below leans on,
+  // and it was wrong in production: signAccessToken defaults azp to
+  // 'user-service', which is in KEYCLOAK_SERVICE_AUDIENCE, so a plain customer
+  // token matched the allow-list on azp alone and took the service branch —
+  // 200 on another customer's record where 403 was expected. What separates the
+  // two is sub: signServiceToken subjects the token with the client id, a user
+  // token with the person's keycloakSub.
+  // -------------------------------------------------------------------------
+  describe('getServiceIdentity', () => {
+    const fakeRequest = (auth: any) => ({ auth }) as any;
+
+    it('returns null for a customer token whose azp is the allow-listed user-service', () => {
+      const identity = getServiceIdentity(fakeRequest({
+        sub: '4f1b0a2e-8c3d-4f56-9a10-2b7c8d9e0f11',
+        azp: 'user-service',
+        aud: 'frontend-spa',
+      }));
+      expect(identity).toBeNull();
+    });
+
+    it('returns null when only the aud names an allow-listed client', () => {
+      const identity = getServiceIdentity(fakeRequest({
+        sub: '4f1b0a2e-8c3d-4f56-9a10-2b7c8d9e0f11',
+        azp: 'user-service',
+        aud: ['frontend-spa', 'business-service'],
+      }));
+      expect(identity).toBeNull();
+    });
+
+    it('recognises a real service token (sub === azp), tenant-bound', () => {
+      const identity = getServiceIdentity(fakeRequest({
+        sub: 'business-service',
+        azp: 'business-service',
+        aud: 'business-service',
+        brandId: BRAND_A,
+      }));
+      expect(identity).toEqual({ clientId: 'business-service', brandId: BRAND_A, legacy: false });
+    });
+
+    it('recognises a real service token with no brand claim as legacy', () => {
+      const identity = getServiceIdentity(fakeRequest({
+        sub: 'business-service',
+        azp: 'business-service',
+        aud: 'business-service',
+      }));
+      expect(identity).toEqual({ clientId: 'business-service', brandId: null, legacy: true });
+    });
+
+    it('still matches a per-tenant client id on its prefix', () => {
+      const identity = getServiceIdentity(fakeRequest({
+        sub: 'business-service:chepizza',
+        azp: 'business-service:chepizza',
+        aud: 'business-service:chepizza',
+        brandId: BRAND_A,
+      }));
+      expect(identity).toEqual({ clientId: 'business-service:chepizza', brandId: BRAND_A, legacy: false });
+    });
+
+    it('returns null when sub and azp disagree (a user token wearing a service azp)', () => {
+      const identity = getServiceIdentity(fakeRequest({
+        sub: 'sub-cust-a',
+        azp: 'business-service',
+        brandId: BRAND_B,
+      }));
+      expect(identity).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // The headline case: a service credential belonging to tenant B reading
   // tenant A's customer list. Before the fix this returned 200 with real rows —
   // one shared secret was the whole customer database of every tenant.
@@ -141,7 +210,7 @@ describe('cross-tenant isolation', () => {
 
     it('refuses a brand-B service token querying brand A (was 200, now 403)', async () => {
       const res = await query(
-        { 'x-test-azp': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
+        { 'x-test-azp': 'business-service:brand-b', 'x-test-sub': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
         { brandId: BRAND_A, limit: 5 },
       );
       expect(res.statusCode).toBe(403);
@@ -155,7 +224,7 @@ describe('cross-tenant isolation', () => {
     // with brand A's real customer rows.
     it('refuses a caller bound to brand B dumping brand A under the plain client id', async () => {
       const res = await query(
-        { 'x-test-azp': 'business-service', 'x-test-brand-id': BRAND_B },
+        { 'x-test-azp': 'business-service', 'x-test-sub': 'business-service', 'x-test-brand-id': BRAND_B },
         { brandId: BRAND_A, limit: 200 },
       );
       expect(res.statusCode).toBe(403);
@@ -164,7 +233,7 @@ describe('cross-tenant isolation', () => {
 
     it('refuses cross-tenant access expressed as a businessId', async () => {
       const res = await query(
-        { 'x-test-azp': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
+        { 'x-test-azp': 'business-service:brand-b', 'x-test-sub': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
         { businessId: BIZ_A, limit: 5 },
       );
       expect(res.statusCode).toBe(403);
@@ -173,7 +242,7 @@ describe('cross-tenant isolation', () => {
 
     it('allows a service token querying its own brand', async () => {
       const res = await query(
-        { 'x-test-azp': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
+        { 'x-test-azp': 'business-service:brand-a', 'x-test-sub': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
         { brandId: BRAND_A, limit: 5 },
       );
       expect(res.statusCode).toBe(200);
@@ -182,7 +251,7 @@ describe('cross-tenant isolation', () => {
 
     it('refuses an unscoped query from a tenant-bound caller', async () => {
       const res = await query(
-        { 'x-test-azp': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
+        { 'x-test-azp': 'business-service:brand-a', 'x-test-sub': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
         { limit: 5 },
       );
       expect(res.statusCode).toBe(400);
@@ -206,7 +275,7 @@ describe('cross-tenant isolation', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/internal/v1/users/query',
-        headers: { 'x-test-azp': 'business-service' },
+        headers: { 'x-test-azp': 'business-service', 'x-test-sub': 'business-service' },
         payload: { brandId: BRAND_A, limit: 5 },
       });
       expect(res.statusCode).toBe(200);
@@ -254,7 +323,7 @@ describe('cross-tenant isolation', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/internal/v1/users/query',
-        headers: { 'x-test-azp': 'business-service' },
+        headers: { 'x-test-azp': 'business-service', 'x-test-sub': 'business-service' },
         payload: { brandId: BRAND_A, limit: 5 },
       });
       expect(res.statusCode).toBe(403);
@@ -274,6 +343,34 @@ describe('cross-tenant isolation', () => {
     it('refuses a plain customer (was 200 for any id, now 403)', async () => {
       const res = await getUser('u-cust-a', { host: HOST_A, 'x-test-sub': 'sub-cust-a' });
       expect(res.statusCode).toBe(403);
+    });
+
+    // The exact claim shape signAccessToken mints — azp='user-service',
+    // aud='frontend-spa'. Verified 403 in prod on 26 Aug 2026 as a 200: the
+    // token above omits azp, so it never exercised the branch that broke.
+    describe('with the real customer-token claims (azp=user-service, aud=frontend-spa)', () => {
+      const customerToken = (sub: string) => ({
+        host: HOST_A,
+        'x-test-sub': sub,
+        'x-test-azp': 'user-service',
+        'x-test-aud': 'frontend-spa',
+      });
+
+      it('refuses a USER reading another customer of the same brand', async () => {
+        const res = await getUser('u-cust-b', customerToken('sub-cust-a'));
+        expect(res.statusCode).toBe(403);
+      });
+
+      it('refuses a USER reading a brand-A customer', async () => {
+        const res = await getUser('u-cust-a', customerToken('sub-cust-a'));
+        expect(res.statusCode).toBe(403);
+      });
+
+      it('still lets brand-A staff read a brand-A customer', async () => {
+        const res = await getUser('u-cust-a', customerToken('sub-staff-a'));
+        expect(res.statusCode).toBe(200);
+        expect(res.json().email).toBe('cust-a@x.com');
+      });
     });
 
     it('refuses an unauthenticated caller', async () => {
@@ -357,7 +454,7 @@ describe('cross-tenant isolation', () => {
 
     it('refuses a brand-B service token writing a brand-A membership', async () => {
       const res = await patch(
-        { 'x-test-azp': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
+        { 'x-test-azp': 'business-service:brand-b', 'x-test-sub': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
         { memberships: [{ brandId: BRAND_A, businessId: BIZ_A, roles: [] }] },
       );
       expect(res.statusCode).toBe(403);
@@ -366,7 +463,7 @@ describe('cross-tenant isolation', () => {
 
     it('refuses a mixed-brand payload on the entry the caller does not own', async () => {
       const res = await patch(
-        { 'x-test-azp': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
+        { 'x-test-azp': 'business-service:brand-b', 'x-test-sub': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
         { memberships: [
           { brandId: BRAND_B, businessId: BIZ_B, roles: [] },
           { brandId: BRAND_A, businessId: BIZ_A, roles: [] },
@@ -377,7 +474,7 @@ describe('cross-tenant isolation', () => {
 
     it('allows a service token writing its own brand', async () => {
       const res = await patch(
-        { 'x-test-azp': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
+        { 'x-test-azp': 'business-service:brand-a', 'x-test-sub': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
         { memberships: [{ brandId: BRAND_A, businessId: BIZ_A, roles: [] }] },
       );
       expect(res.statusCode).toBe(200);
@@ -400,7 +497,7 @@ describe('cross-tenant isolation', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/internal/v1/users/u-cust-a/memberships/counters',
-        headers: { 'x-test-azp': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
+        headers: { 'x-test-azp': 'business-service:brand-b', 'x-test-sub': 'business-service:brand-b', 'x-test-brand-id': BRAND_B },
         payload: { businessId: BIZ_A, brandId: BRAND_A, scope: 'BRAND', validStamps: 999 },
       });
       expect(res.statusCode).toBe(403);
@@ -412,7 +509,7 @@ describe('cross-tenant isolation', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/internal/v1/users/u-cust-a/memberships/counters',
-        headers: { 'x-test-azp': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
+        headers: { 'x-test-azp': 'business-service:brand-a', 'x-test-sub': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
         payload: { businessId: BIZ_A, brandId: BRAND_A, scope: 'BRAND', validStamps: 9 },
       });
       expect(res.statusCode).toBe(200);
@@ -427,7 +524,7 @@ describe('cross-tenant isolation', () => {
       const res = await server.inject({
         method: 'POST',
         url: '/internal/v1/users/u-legacy-cust/memberships/counters',
-        headers: { 'x-test-azp': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
+        headers: { 'x-test-azp': 'business-service:brand-a', 'x-test-sub': 'business-service:brand-a', 'x-test-brand-id': BRAND_A },
         payload: { businessId: BIZ_A, brandId: BRAND_A, scope: 'BRAND', validStamps: 4 },
       });
       expect(res.statusCode).toBe(200);

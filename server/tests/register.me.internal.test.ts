@@ -156,7 +156,7 @@ describe('user-service core endpoints', () => {
     // With service auth via x-test-azp
     res = await server.inject({
       method: 'POST', url: '/internal/v1/users/query',
-      headers: { 'x-test-azp': 'campaign-service' },
+      headers: { 'x-test-azp': 'campaign-service', 'x-test-sub': 'campaign-service' },
       payload: { targetingRules: [{ database: 'USER', field: 'email', operator: 'CONTAINS', value: '@' }], limit: 5 }
     });
     expect(res.statusCode).toBe(200);

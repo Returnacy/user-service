@@ -71,6 +71,9 @@ export function getServiceIdentity(request: FastifyRequest): ServiceIdentity | n
   const auth = (request as any).auth as any;
   if (!auth) return null;
 
+  const sub = typeof auth.sub === 'string' && auth.sub.length > 0 ? auth.sub : null;
+  if (!sub) return null;
+
   const allowed = allowedServiceIds();
   const azp = typeof auth.azp === 'string' ? auth.azp : null;
   const audClaim = auth.aud;
@@ -80,12 +83,18 @@ export function getServiceIdentity(request: FastifyRequest): ServiceIdentity | n
       ? [audClaim]
       : [];
 
-  let clientId: string | null = null;
-  if (azp && matchesAllowedService(azp, allowed)) {
-    clientId = azp;
-  } else {
-    clientId = audList.find((aud) => matchesAllowedService(aud, allowed)) ?? null;
-  }
+  // `sub === client id` is the only claim that actually separates a service
+  // token from a user token: signServiceToken does .setSubject(claims.azp),
+  // while signAccessToken sets the subject to the person's keycloakSub and
+  // defaults azp to 'user-service' — which is itself in the allow-list. So
+  // matching on azp/aud alone made EVERY logged-in customer look like the
+  // 'user-service' service client: requireServiceForTenant waved them through
+  // the rotation window and requireBrandRole returned before ever reading
+  // their memberships. Same rule as business-service's evaluateTenantAccess.
+  const clientId = [azp, ...audList].find(
+    (candidate): candidate is string =>
+      typeof candidate === 'string' && candidate === sub && matchesAllowedService(candidate, allowed),
+  ) ?? null;
   if (!clientId) return null;
 
   const brandId = typeof auth.brandId === 'string' && auth.brandId.length > 0 ? auth.brandId : null;
