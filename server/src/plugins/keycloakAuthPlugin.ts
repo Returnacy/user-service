@@ -2,6 +2,8 @@ import fp from 'fastify-plugin';
 import { importSPKI, jwtVerify, decodeJwt, type CryptoKey } from 'jose';
 import type { JWTVerifyOptions } from 'jose';
 
+import { matchesAllowedService } from '../utils/tenantGuard.js';
+
 export default fp(async (fastify) => {
   // Test bypass: allow tests to inject auth without real Keycloak
   if (process.env.KEYCLOAK_AUTH_BYPASS === 'true') {
@@ -34,7 +36,7 @@ export default fp(async (fastify) => {
   fastify.log.info({ SELF_ISSUER }, '[user-service] Single-issuer mode: only accepting self-issued tokens');
 
   const audienceEnv = process.env.KEYCLOAK_AUDIENCE || process.env.KEYCLOAK_ALLOWED_AUDIENCES || '';
-  const allowedAudiences = audienceEnv.split(',').map(s => s.trim()).filter(Boolean);
+  const allowedAudiences = new Set(audienceEnv.split(',').map(s => s.trim()).filter(Boolean));
 
   const CLOCK_TOLERANCE_SECONDS = Number(process.env.KEYCLOAK_CLOCK_TOLERANCE_SECONDS || 60);
 
@@ -80,13 +82,24 @@ export default fp(async (fastify) => {
       const verifyOptions: JWTVerifyOptions = { issuer: SELF_ISSUER, clockTolerance: CLOCK_TOLERANCE_SECONDS };
       const { payload } = await jwtVerify(token, SELF_KEY, verifyOptions);
 
-      if (allowedAudiences.length > 0) {
+      if (allowedAudiences.size > 0) {
         const audClaim = payload.aud;
         const azpClaim: unknown = (payload as any).azp;
         const audList: string[] = Array.isArray(audClaim) ? audClaim as string[] : typeof audClaim === 'string' ? [audClaim] : [];
         const azpList: string[] = typeof azpClaim === 'string' ? [azpClaim] : Array.isArray(azpClaim) ? azpClaim as string[] : [];
         const combined = [...audList, ...azpList];
-        if (!combined.some(v => allowedAudiences.includes(v)))
+        // Prefix match, not exact: from §8.1 on every new brand's backend
+        // authenticates as `business-service:<slug>`, an id that appears in no
+        // KEYCLOAK_AUDIENCE deployed before that brand existed. Exact matching
+        // meant provisioning a tenant silently 401'd its whole CRM until the env
+        // var was edited by hand. This is the rule tenantGuard's
+        // matchesAllowedService, serviceCallerGuard's isServiceCaller and
+        // business-service's evaluateTenantAccess already share — the gate that
+        // runs first should not be the one disagreeing. It widens the candidate,
+        // never the allow-list: an unrelated family ('attacker-service:quieora')
+        // still fails, and the legacy bare 'business-service' Che Pizza presents
+        // matches exactly as before.
+        if (!combined.some(v => matchesAllowedService(v, allowedAudiences)))
           return reply.status(401).send({ error: 'Invalid audience' });
       }
 
