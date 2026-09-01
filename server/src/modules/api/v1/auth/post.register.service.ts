@@ -60,18 +60,6 @@ function buildClaims(user: { keycloakSub: string; email: string; name?: string |
   return claims;
 }
 
-// Fallback tenant used when domain-mapper cannot resolve the request to a
-// (businessId, brandId). Single-tenant deployment: set DEFAULT_BUSINESS_ID /
-// DEFAULT_BRAND_ID to the live tenant's IDs so a transient domain-mapper
-// failure can never silently create a membership-less (orphan) user.
-// MUST be revisited before onboarding a second tenant.
-function defaultMembershipTarget(): { businessId: string | null; brandId: string | null } | null {
-  const businessId = process.env.DEFAULT_BUSINESS_ID || null;
-  const brandId = process.env.DEFAULT_BRAND_ID || null;
-  if (!businessId && !brandId) return null;
-  return { businessId, brandId };
-}
-
 export async function postRegisterService(request: FastifyRequest): Promise<ServiceResponse<RegisterResponse>> {
   try {
     const DEBUG = process.env.DEBUG_MEMBERSHIP === '1';
@@ -224,23 +212,24 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     const localSub = crypto.randomUUID();
     const localPasswordHash = await bcrypt.hash(loginPassword, 10);
 
-    // Determine the tenant membership to enrol the new user into. Prefer the
-    // domain-mapper resolution; fall back to the configured default tenant when
-    // resolution failed or returned an empty (businessId/brandId-less) object.
+    // Determine the tenant membership to enrol the new user into. It comes from
+    // the domain-mapper resolution of the request host and from nothing else:
+    // with more than one public tenant, a DEFAULT_BRAND_ID/DEFAULT_BUSINESS_ID
+    // fallback would silently enrol a second tenant's signup into Che Pizza
+    // during any mapper failure window. Fail closed instead.
     // The guard matches the existing-user path so a resolved-but-empty domain
     // cannot slip through and throw BUSINESS_OR_BRAND_REQUIRED.
-    const resolvedTarget = (domain && (domain.businessId || domain.brandId))
+    const membershipTarget = (domain && (domain.businessId || domain.brandId))
       ? { businessId: domain.businessId, brandId: domain.brandId }
       : null;
-    const membershipTarget = resolvedTarget ?? defaultMembershipTarget();
 
     if (!membershipTarget) {
-      // No domain resolution AND no configured fallback. Refuse rather than
-      // creating an orphan user behind a 200. Loud (error-level) so monitoring
-      // catches it instead of it failing silently.
+      // The host could not be resolved to a tenant. Refuse rather than guessing
+      // a brand or creating an orphan user behind a 200. Loud (error-level) so
+      // monitoring catches it instead of it failing silently.
       request.log.error(
         { host, xfh, origin, referer, originHost, refererHost },
-        'Registration aborted: no membership target (domain unresolved and DEFAULT_BUSINESS_ID/DEFAULT_BRAND_ID not set)'
+        'Registration aborted: request host did not resolve to a tenant (no default-brand fallback, by design)'
       );
       return {
         statusCode: 503,
@@ -249,13 +238,6 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
           message: 'Registrazione temporaneamente non disponibile. Riprova tra poco.',
         },
       };
-    }
-
-    if (!resolvedTarget) {
-      request.log.warn(
-        { host, xfh, origin, referer, membershipTarget },
-        'Domain resolution returned no tenant; using configured default membership target'
-      );
     }
 
     // Atomic: the User row and its tenant membership are created together, or
