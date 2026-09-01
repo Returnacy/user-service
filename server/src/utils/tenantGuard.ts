@@ -52,7 +52,7 @@ function allowedServiceIds(): Set<string> {
   return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
 }
 
-function matchesAllowedService(candidate: string, allowed: Set<string>): boolean {
+export function matchesAllowedService(candidate: string, allowed: Set<string>): boolean {
   if (allowed.has(candidate)) return true;
   const base = candidate.split(':')[0] ?? '';
   return base.length > 0 && allowed.has(base);
