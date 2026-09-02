@@ -20,10 +20,15 @@
  *   ADMIN_EMAIL=... ADMIN_SUB=... [ADMIN_NAME=... ADMIN_SURNAME=...] \
  *   pnpm --filter @user-service/db seed
  *
+ * ADMIN_NAME / ADMIN_SURNAME / ADMIN_BIRTHDAY only ever apply to an account
+ * this seed has to create; an owner who registered himself keeps the details he
+ * typed in (see seedBrandAdmin.ts).
+ *
  * See PROVISION-BRAND.md.
  */
 import { prisma } from './prismaClient.js';
 import { RepositoryPrisma } from './repository.prisma.js';
+import { seedBrandAdmin, type SeedBrandAdminResult } from './seedBrandAdmin.js';
 
 const repo = new RepositoryPrisma();
 
@@ -54,11 +59,11 @@ async function seedPolicies() {
   }
 }
 
-async function seedBrandAdmin(brandId: string, businessId: string | null) {
+async function runBrandAdminSeed(brandId: string, businessId: string | null): Promise<SeedBrandAdminResult | null> {
   const email = envVar('ADMIN_EMAIL');
   if (!email) {
     console.log('  - ADMIN_EMAIL not set; skipping brand admin');
-    return;
+    return null;
   }
   // keycloakSub is the identity a JWT's `sub` carries. For a brand-new client
   // there is no account yet, so the operator supplies the sub and the owner
@@ -69,18 +74,32 @@ async function seedBrandAdmin(brandId: string, businessId: string | null) {
     throw new Error('ADMIN_SUB is required when ADMIN_EMAIL is set (the keycloakSub / JWT sub of the owner account)');
   }
 
-  const user = await repo.upsertUserByKeycloakSub(sub, {
+  const result = await seedBrandAdmin(repo, {
+    brandId,
+    businessId,
     email,
-    name: envVar('ADMIN_NAME') ?? 'Owner',
-    surname: envVar('ADMIN_SURNAME') ?? '',
-    birthday: envVar('ADMIN_BIRTHDAY') ?? '1970-01-01',
-    userPrivacyPolicyAcceptance: true,
-    userTermsAcceptance: true,
-  } as any);
+    sub,
+    name: envVar('ADMIN_NAME'),
+    surname: envVar('ADMIN_SURNAME'),
+    birthday: envVar('ADMIN_BIRTHDAY'),
+  });
 
-  await repo.upsertMembership(user.id, { brandId, businessId, role: 'ADMIN' as any });
   console.log(`  - ADMIN membership for ${email} on brand ${brandId}`);
   console.log('    (add this sub to PLATFORM_ADMIN_SUBS only if the person operates the platform, not just this brand)');
+  return result;
+}
+
+function reportBrandAdmin(result: SeedBrandAdminResult | null) {
+  if (!result) return;
+  console.log('[user-service][db] Brand admin summary:');
+  console.log(result.user === 'created'
+    ? `  - user: created (${result.userId})`
+    : `  - user: kept existing user ${result.userId} — name, birthday and consents left untouched`);
+  console.log(`  - membership: ${result.membership} (role ADMIN)`);
+  if (result.emailMismatch) {
+    console.log(`  - WARNING: the account behind ADMIN_SUB has email ${result.emailMismatch}, not the ADMIN_EMAIL you passed.`);
+    console.log('    Nothing was overwritten, but check you promoted the right person.');
+  }
 }
 
 async function seedDemoUsers(brandId: string, businessId: string | null) {
@@ -128,12 +147,13 @@ async function main() {
   }
   const businessId = envVar('BUSINESS_ID') ?? null;
 
-  await seedBrandAdmin(brandId, businessId);
+  const brandAdmin = await runBrandAdminSeed(brandId, businessId);
 
   if (process.env.SEED_DEMO_USERS === 'true') {
     await seedDemoUsers(brandId, businessId);
   }
 
+  reportBrandAdmin(brandAdmin);
   console.log('[user-service][db] Seed complete.');
 }
 
