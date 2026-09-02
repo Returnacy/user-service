@@ -7,6 +7,8 @@ import { z } from 'zod';
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 import { resolveDomain } from '@/utils/domainMapping.js';
+import { resolveBrandName, resolveVerifyEmailBase } from '@/utils/emailLinks.js';
+import { buildResetLink as buildVerifyLink } from './post.forgotPassword.service.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
 import { mintTokenPair, type AccessTokenClaims } from '@/utils/selfIssuedJwt.js';
@@ -274,10 +276,12 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
     try {
       const ttlMinutes = Number.parseInt(process.env.EMAIL_VERIFY_TTL_MINUTES || '1440', 10);
       const tokenRow = await repository.createEmailVerificationToken(dbUser.id, Number.isFinite(ttlMinutes) ? ttlMinutes : 1440);
-      const verifyBase = process.env.FRONTEND_VERIFY_EMAIL_URL || process.env.FRONTEND_BASE_URL || '';
-      const verificationLink = verifyBase ? `${verifyBase}?token=${encodeURIComponent(tokenRow.token)}` : `token:${tokenRow.token}`;
+      // Both the link and the name follow the brand the request came in on:
+      // the env vars are single-valued on a service every brand shares.
+      const verifyBase = resolveVerifyEmailBase(domain);
+      const verificationLink = buildVerifyLink(verifyBase, tokenRow.token);
 
-      const businessName = (process.env.BUSINESS_NAME || (domain?.brandId ? String(domain.brandId) : '') || 'la tua attività');
+      const businessName = resolveBrandName(domain);
       const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';
       const userName = `${registerData.name}${registerData.surname ? ' ' + registerData.surname : ''}`.trim() || 'Cliente';
 

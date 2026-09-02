@@ -3,7 +3,8 @@ import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { renderEmailTemplate } from '@/utils/emailTemplates.js';
-import { buildResetLink, buildDomainResetBase, normalizeAbsoluteUrl, resolveDomainFromRequest } from './post.forgotPassword.service.js';
+import { buildResetLink, normalizeAbsoluteUrl, resolveDomainFromRequest } from './post.forgotPassword.service.js';
+import { resolveBrandName, resolveVerifyEmailBase, verifyEmailPath } from '@/utils/emailLinks.js';
 
 type VerifyEmailBody = {
   redirectUri?: string;
@@ -29,11 +30,12 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
   const ttlMinutes = Number.parseInt(process.env.EMAIL_VERIFY_TTL_MINUTES || '1440', 10);
   const tokenRow = await repository.createEmailVerificationToken(user.id, Number.isFinite(ttlMinutes) ? ttlMinutes : 1440);
   const domain = await resolveDomainFromRequest(request);
-  const redirectBase = normalizeAbsoluteUrl(body.redirectUri ?? null);
-    const domainBase = buildDomainResetBase(domain);
-    const verifyBase = normalizeAbsoluteUrl(process.env.FRONTEND_VERIFY_EMAIL_URL || null);
-    const envBase = normalizeAbsoluteUrl(process.env.FRONTEND_BASE_URL || null, '/auth/verify-email');
-    const effectiveBase = redirectBase ?? domainBase ?? verifyBase ?? envBase;
+  // The SPA sends its bare origin as redirectUri, and the domain fallback used
+  // to be the *password-reset* page, so both landed the recipient somewhere
+  // other than the verification page. Whichever host wins, the path is the
+  // verification page's.
+  const redirectBase = normalizeAbsoluteUrl(body.redirectUri ?? null, verifyEmailPath());
+    const effectiveBase = redirectBase ?? resolveVerifyEmailBase(domain);
     const url = buildResetLink(effectiveBase, tokenRow.token);
 
     // Send email via messaging-service (Resend)
@@ -43,7 +45,7 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
     const accessToken = await tokenService.getAccessToken({ scope: 'send' });
     const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
 
-    const businessName = process.env.BUSINESS_NAME || 'la tua attività';
+    const businessName = resolveBrandName(domain);
     const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';
     const userName = `${user.name || ''} ${user.surname || ''}`.trim() || 'Cliente';
     const subject = `Verifica il tuo indirizzo email - ${businessName}`;
