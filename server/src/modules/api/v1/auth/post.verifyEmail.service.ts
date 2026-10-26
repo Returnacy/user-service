@@ -1,10 +1,10 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 import { buildResetLink, normalizeAbsoluteUrl, resolveDomainFromRequest } from './post.forgotPassword.service.js';
 import { resolveBrandName, resolveVerifyEmailBase, verifyEmailPath } from '@/utils/emailLinks.js';
+import { sendMessagingEmail } from '@/utils/messagingClient.js';
 
 type VerifyEmailBody = {
   redirectUri?: string;
@@ -56,12 +56,9 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
       verification_link: url,
     });
     const idempotencyKey = `verify:${user.id}:${tokenRow.id}`;
-    await axios.post(`${messagingUrl}/api/v1/messages`, {
-      campaignId: null,
+    await sendMessagingEmail(messagingUrl, accessToken, {
       recipientId: user.id,
       idempotencyKey,
-      channel: 'EMAIL',
-      scheduledAt: null,
       payload: {
         subject,
         bodyHtml,
@@ -69,8 +66,7 @@ export async function postVerifyEmailService(request: FastifyRequest): Promise<S
         from,
         to: { email: user.email, name: `${user.name || ''} ${user.surname || ''}`.trim() || 'Utente' }
       },
-      maxAttempts: 1
-    }, { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
+    }, request.log);
 
     return { statusCode: 200, body: { ok: true } };
   } catch (error: any) {

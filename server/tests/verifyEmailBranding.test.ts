@@ -120,7 +120,7 @@ describe('verification email is addressed to the brand the user signed up on', (
 
   beforeEach(() => {
     vi.mocked(axios.post).mockReset();
-    vi.mocked(axios.post).mockResolvedValue({ data: { ok: true } } as any);
+    vi.mocked(axios.post).mockResolvedValue({ status: 202, data: { messageId: 'msg_1' } } as any);
     vi.mocked(resolveDomain).mockImplementation(async (host?: any) => DOMAINS[String(host)] ?? null);
   });
 
@@ -195,7 +195,7 @@ describe('resent verification email (POST /auth/verify-email)', () => {
 
   beforeEach(() => {
     vi.mocked(axios.post).mockReset();
-    vi.mocked(axios.post).mockResolvedValue({ data: { ok: true } } as any);
+    vi.mocked(axios.post).mockResolvedValue({ status: 202, data: { messageId: 'msg_1' } } as any);
     vi.mocked(resolveDomain).mockImplementation(async (host?: any) => DOMAINS[String(host)] ?? null);
   });
 

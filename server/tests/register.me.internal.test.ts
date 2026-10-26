@@ -1,5 +1,7 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync } from 'node:crypto';
 import { buildServer } from '../src/appBuilder.js';
+import { _resetSelfIssuedCache } from '@/utils/selfIssuedJwt.js';
 import axios from 'axios';
 
 // Simple axios mock per-test
@@ -13,6 +15,22 @@ vi.mock('axios', async () => {
       put: vi.fn(),
       get: vi.fn(),
     }
+  };
+});
+
+// Registration fails closed on a host that resolves to no tenant (91c7eb7), so
+// the signup host must map to one, as it does in production. Only resolveDomain
+// is overridden, and only for that host: every other test here keeps the real
+// module.
+const TENANT_HOST = 'fidelity.tenant.test';
+const TENANT = { brandId: 'brand-test', businessId: 'biz-test' };
+vi.mock('@/utils/domainMapping.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/utils/domainMapping.js')>('../src/utils/domainMapping.js');
+  return {
+    ...actual,
+    resolveDomain: vi.fn(async (host?: string | null) => (host === 'fidelity.tenant.test'
+      ? { brandId: 'brand-test', businessId: 'biz-test', host, service: 'frontend-spa', label: 'tenant', url: `https://${host}` }
+      : actual.resolveDomain(host))),
   };
 });
 
@@ -35,6 +53,11 @@ function createMemoryRepo() {
       } else {
         Object.assign(u, data);
       }
+      return u;
+    },
+    async createUserWithMembership(sub: string, data: any, m: any) {
+      const u = await this.upsertUserByKeycloakSub(sub, data);
+      await this.addMembership(u.id, m);
       return u;
     },
     async addMembership(userId: string, m: any) {
@@ -79,6 +102,7 @@ function createMemoryRepo() {
     async createPrivacyPolicyAcceptance() { return { ok: true }; },
     async createTermsOfServiceAcceptance() { return { ok: true }; },
     async createMarketingTermsAcceptance() { return { ok: true }; },
+    async createEmailVerificationToken(userId: string) { return { id: 'tok_1', token: 'verify-token', userId }; },
   };
 }
 
@@ -88,7 +112,17 @@ describe('user-service core endpoints', () => {
   const overrides = { repository: createMemoryRepo(), tokenService: { async getAccessToken() { return 'test-admin-token'; } } } as const;
 
   beforeAll(async () => {
-    process.env = { ...OLD_ENV, KEYCLOAK_AUTH_BYPASS: 'true', KEYCLOAK_BASE_URL: 'http://kc', KEYCLOAK_REALM: 'returnacy' };
+    // Register now answers with self-issued tokens, so the signing key must exist.
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+    process.env = {
+      ...OLD_ENV, KEYCLOAK_AUTH_BYPASS: 'true', KEYCLOAK_BASE_URL: 'http://kc', KEYCLOAK_REALM: 'returnacy',
+      JWT_PRIVATE_KEY: privateKey, JWT_PUBLIC_KEY: publicKey, JWT_KID: 'test-kid-1', JWT_ISSUER: 'https://test.user-service.local',
+    };
+    _resetSelfIssuedCache();
     server = await buildServer({ overrides });
     await server.ready();
   });
@@ -108,7 +142,7 @@ describe('user-service core endpoints', () => {
     const res = await server.inject({
       method: 'POST',
       url: '/api/v1/auth/register',
-      headers: { host: 'localhost' },
+      headers: { host: TENANT_HOST },
       payload: {
         email,
         password: 'SuperSecret1!',
@@ -121,8 +155,11 @@ describe('user-service core endpoints', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.email).toBe(email);
-    expect(body.keycloakSub).toBeDefined();
+    // The response is now the token pair plus { user }, not the bare user.
+    expect(body.user.email).toBe(email);
+    expect(body.user.keycloakSub).toBeDefined();
+    const memberships = await overrides.repository.listMemberships(body.user.id);
+    expect(memberships).toEqual([expect.objectContaining({ ...TENANT, role: 'USER' })]);
   });
 
   it('GET /api/v1/me does NOT enrol the caller into the host brand', async () => {

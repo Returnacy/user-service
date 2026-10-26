@@ -1,9 +1,10 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
 
 import type { ServiceResponse } from '@/types/serviceResponse.js';
 import { renderEmailTemplate } from '@/utils/emailTemplates.js';
 import { resolveDomain, type DomainResolution } from '@/utils/domainMapping.js';
+import { resolveBrandName } from '@/utils/emailLinks.js';
+import { sendMessagingEmail } from '@/utils/messagingClient.js';
 
 type ForgotPasswordBody = {
   email: string;
@@ -93,7 +94,12 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
 
     const repository = (request.server as any).repository as any;
     const user = await repository.findUserByEmail(email);
-    if (!user) return { statusCode: 404, body: { error: 'USER_NOT_FOUND' } };
+    if (!user) {
+      // Same answer as a real send, so the endpoint cannot be used to probe
+      // which addresses have an account.
+      request.log.info('forgot-password requested for an unknown email; answering ok without sending');
+      return { statusCode: 200, body: { ok: true } };
+    }
 
   // Create reset token and send via messaging-service
   const ttlMinutes = Number.parseInt(process.env.PASSWORD_RESET_TTL_MINUTES || '60', 10);
@@ -112,7 +118,7 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
     const tokenService = (request.server as any).keycloakTokenService as TokenService;
     const accessToken = await tokenService.getAccessToken({ scope: 'send' });
     const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
-    const businessName = process.env.BUSINESS_NAME || 'la tua attività';
+    const businessName = resolveBrandName(domain);
     const businessEmoji = process.env.BUSINESS_EMOJI || '🍕';
     const userName = `${user.name || ''} ${user.surname || ''}`.trim() || 'Cliente';
     const subject = `Reimposta la tua password - ${businessName}`;
@@ -124,12 +130,9 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
       ttl_minutes: ttlMinutes,
     });
     const idempotencyKey = `reset:${user.id}:${tokenRow.id}`;
-    await axios.post(`${messagingUrl}/api/v1/messages`, {
-      campaignId: null,
+    await sendMessagingEmail(messagingUrl, accessToken, {
       recipientId: user.id,
       idempotencyKey,
-      channel: 'EMAIL',
-      scheduledAt: null,
       payload: {
         subject,
         bodyHtml,
@@ -137,8 +140,7 @@ export async function postForgotPasswordService(request: FastifyRequest): Promis
         from,
         to: { email: user.email, name: `${user.name || ''} ${user.surname || ''}`.trim() || 'Utente' }
       },
-      maxAttempts: 1
-    }, { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
+    }, request.log);
 
     return { statusCode: 200, body: { ok: true } };
   } catch (error: any) {
