@@ -1,5 +1,4 @@
 import type { FastifyRequest } from 'fastify';
-import axios from 'axios';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { z } from 'zod';
@@ -11,6 +10,7 @@ import { resolveBrandName, resolveVerifyEmailBase } from '@/utils/emailLinks.js'
 import { buildResetLink as buildVerifyLink } from './post.forgotPassword.service.js';
 import { verifyGoogleIdToken } from '@/utils/googleIdentity.js';
 import { ensureDomainMembership } from '@/utils/membershipSync.js';
+import { sendMessagingEmail } from '@/utils/messagingClient.js';
 import { mintTokenPair, type AccessTokenClaims } from '@/utils/selfIssuedJwt.js';
 import { registerSchema } from '@user-service/types';
 
@@ -301,12 +301,9 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
         const svcToken = await tokenService.getAccessToken({ scope: 'send' });
         const from = process.env.EMAIL_FROM || 'noreply@returnacy.app';
         const idempotencyKey = `verify:register:${dbUser.id}:${tokenRow.id}`;
-        await axios.post(`${messagingUrl}/api/v1/messages`, {
-          campaignId: null,
+        await sendMessagingEmail(messagingUrl, svcToken, {
           recipientId: dbUser.id,
           idempotencyKey,
-          channel: 'EMAIL',
-          scheduledAt: null,
           payload: {
             subject,
             bodyHtml,
@@ -314,8 +311,7 @@ export async function postRegisterService(request: FastifyRequest): Promise<Serv
             from,
             to: { email: dbUser.email, name: userName || 'Utente' }
           },
-          maxAttempts: 1
-        }, { headers: { Authorization: `Bearer ${svcToken}`, 'Content-Type': 'application/json' } });
+        }, request.log);
       }
     } catch (sendErr) {
       request.log.error({ err: sendErr }, 'Failed to send verification email after registration');
