@@ -10,6 +10,8 @@ import { postVerifyEmailHandler } from './post.verifyEmail.controller.js';
 import { postVerifyEmailConfirmHandler } from './post.verifyEmailConfirm.controller.js';
 import { postResetPasswordHandler } from './post.resetPassword.controller.js';
 import { postPmHandoffHandler } from './post.pmHandoff.controller.js';
+import { postHandoffHandler } from './post.handoff.controller.js';
+import { getHandoffTargets } from '@/utils/handoffTargets.js';
 
 export async function authRoute(server: FastifyInstance) {
   server.post('/register', { handler: postRegisterHandler });
@@ -32,4 +34,8 @@ export async function authRoute(server: FastifyInstance) {
   server.post('/forgot-password', { handler: postForgotPasswordHandler });
   server.post('/reset-password', { handler: postResetPasswordHandler });
   server.post('/pm-handoff', { handler: postPmHandoffHandler });
+  // Parse HANDOFF_TARGETS at boot so a misconfigured entry is logged on deploy,
+  // not on the first customer's click.
+  getHandoffTargets(server.log);
+  server.post('/handoff', { handler: postHandoffHandler });
 }
